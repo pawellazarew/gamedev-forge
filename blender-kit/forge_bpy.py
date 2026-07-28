@@ -1,0 +1,268 @@
+"""
+Общая обвязка для headless-скриптов Blender: разбор аргументов после `--`,
+сцена, ортокамера вокруг объекта, свет, рендер и склейка атласа.
+
+Ничего кроме bpy/numpy/mathutils — они есть внутри Blender, а внешние
+пакеты в его Python ставить не хочется.
+"""
+import sys
+import os
+import json
+import math
+
+import bpy
+import numpy as np
+from mathutils import Vector
+
+
+def argv():
+    """Аргументы после `--`: всё до него съедает сам Blender."""
+    return sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
+
+
+def parse(args, defaults):
+    """Простейший разбор `--key value` / `--flag` поверх словаря умолчаний."""
+    out = dict(defaults)
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a.startswith('--'):
+            key = a[2:].replace('-', '_')
+            nxt = args[i + 1] if i + 1 < len(args) else None
+            if nxt is None or nxt.startswith('--'):
+                out[key] = True
+                i += 1
+            else:
+                cur = defaults.get(key)
+                out[key] = type(cur)(nxt) if isinstance(cur, (int, float)) and not isinstance(cur, bool) else nxt
+                i += 2
+        else:
+            i += 1
+    return out
+
+
+# --- сцена ---
+
+def import_asset(path):
+    """Подтягивает .glb/.gltf/.fbx/.obj в текущую сцену."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.glb', '.gltf'):
+        bpy.ops.import_scene.gltf(filepath=path)
+    elif ext == '.fbx':
+        bpy.ops.import_scene.fbx(filepath=path)
+    elif ext == '.obj':
+        bpy.ops.wm.obj_import(filepath=path)
+    elif ext == '.blend':
+        bpy.ops.wm.open_mainfile(filepath=path)
+    else:
+        raise SystemExit(f'Не знаю, как импортировать {ext}')
+
+
+def target_objects(name=None):
+    """Что рендерим: объект/коллекцию по имени или все меши сцены."""
+    if name:
+        if name in bpy.data.collections:
+            return [o for o in bpy.data.collections[name].all_objects if o.type == 'MESH']
+        if name in bpy.data.objects:
+            obj = bpy.data.objects[name]
+            return [obj] + [c for c in obj.children_recursive if c.type == 'MESH']
+        raise SystemExit(f'Нет объекта или коллекции "{name}"')
+    return [o for o in bpy.context.scene.objects if o.type == 'MESH']
+
+
+def bounds(objects):
+    """Центр и радиус описывающей сферы в мировых координатах."""
+    if not objects:
+        raise SystemExit('В сцене нет мешей — нечего рендерить')
+    pts = []
+    for o in objects:
+        for corner in o.bound_box:
+            pts.append(o.matrix_world @ Vector(corner))
+    xs = [p.x for p in pts]; ys = [p.y for p in pts]; zs = [p.z for p in pts]
+    lo = Vector((min(xs), min(ys), min(zs)))
+    hi = Vector((max(xs), max(ys), max(zs)))
+    center = (lo + hi) / 2
+    radius = max((hi - lo).length / 2, 1e-4)
+    return center, radius, lo, hi
+
+
+def setup_camera(center, radius, azimuth_deg, elevation_deg, margin=1.08):
+    """Ортокамера, смотрящая в центр объекта с заданного азимута и высоты.
+
+    Ортографическая проекция обязательна: перспектива ломает совпадение
+    спрайтов между направлениями — объект «дышит» при повороте.
+    """
+    cam_data = bpy.data.cameras.get('forge_cam') or bpy.data.cameras.new('forge_cam')
+    cam_data.type = 'ORTHO'
+    cam_data.ortho_scale = radius * 2 * margin
+    cam_data.clip_start = 0.01
+    cam_data.clip_end = radius * 20
+
+    cam = bpy.data.objects.get('forge_cam')
+    if cam is None:
+        cam = bpy.data.objects.new('forge_cam', cam_data)
+        bpy.context.scene.collection.objects.link(cam)
+    cam.data = cam_data
+
+    az = math.radians(azimuth_deg)
+    el = math.radians(elevation_deg)
+    direction = Vector((math.cos(az) * math.cos(el), math.sin(az) * math.cos(el), math.sin(el)))
+    cam.location = center + direction * (radius * 6)
+    cam.rotation_euler = (-direction).to_track_quat('-Z', 'Y').to_euler()
+
+    bpy.context.scene.camera = cam
+    return cam
+
+
+def ensure_lights(center, radius, strength=1.0):
+    """Трёхточечная схема, если художник не поставил свет сам.
+
+    Спрайт без света — чёрный силуэт, и критик будет обсуждать не тот дефект.
+    """
+    if any(o.type == 'LIGHT' for o in bpy.context.scene.objects):
+        return False
+    specs = [
+        ('key', (1.2, -1.4, 1.6), 'AREA', 900 * strength),
+        ('fill', (-1.6, -0.6, 0.7), 'AREA', 260 * strength),
+        ('rim', (-0.4, 1.7, 1.2), 'AREA', 500 * strength),
+    ]
+    for name, offset, kind, power in specs:
+        data = bpy.data.lights.new(f'forge_{name}', type=kind)
+        data.energy = power * (radius ** 2)
+        if kind == 'AREA':
+            data.size = radius * 2
+        obj = bpy.data.objects.new(f'forge_{name}', data)
+        obj.location = center + Vector(offset) * radius * 3
+        obj.rotation_euler = (center - obj.location).to_track_quat('-Z', 'Y').to_euler()
+        bpy.context.scene.collection.objects.link(obj)
+    return True
+
+
+def setup_render(size, samples=32, transparent=True, engine=None):
+    scene = bpy.context.scene
+    # Имя движка менялось между версиями — берём то, что реально есть.
+    available = [i.identifier for i in scene.bl_rna.properties['render'].fixed_type.bl_rna
+                 .properties['engine'].enum_items]
+    if engine and engine in available:
+        scene.render.engine = engine
+    else:
+        for candidate in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE', 'CYCLES'):
+            if candidate in available:
+                scene.render.engine = candidate
+                break
+
+    scene.render.resolution_x = size
+    scene.render.resolution_y = size
+    scene.render.resolution_percentage = 100
+    scene.render.film_transparent = transparent
+    scene.render.image_settings.file_format = 'PNG'
+    scene.render.image_settings.color_mode = 'RGBA'
+    scene.render.image_settings.color_depth = '8'
+
+    if scene.render.engine == 'CYCLES':
+        scene.cycles.samples = samples
+    else:
+        try:
+            scene.eevee.taa_render_samples = samples
+        except AttributeError:
+            pass
+    return scene.render.engine
+
+
+def render_to(path):
+    bpy.context.scene.render.filepath = path
+    bpy.ops.render.render(write_still=True)
+    return path
+
+
+# --- работа с пикселями ---
+
+def load_rgba(path):
+    """PNG → массив (h, w, 4) float 0..1, строки сверху вниз."""
+    img = bpy.data.images.load(path, check_existing=False)
+    w, h = img.size
+    buf = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(buf)
+    bpy.data.images.remove(img)
+    return buf.reshape(h, w, 4)[::-1]  # Blender хранит снизу вверх
+
+
+def save_rgba(arr, path):
+    h, w, _ = arr.shape
+    img = bpy.data.images.new('forge_out', width=w, height=h, alpha=True)
+    img.pixels.foreach_set(arr[::-1].reshape(-1).astype(np.float32))
+    img.filepath_raw = path
+    img.file_format = 'PNG'
+    img.save()
+    bpy.data.images.remove(img)
+    return path
+
+
+def downsample(arr, factor):
+    """Box-фильтр с премультиплицированием альфы.
+
+    Без премультипликации края спрайта светятся «ореолом»: цвет прозрачных
+    пикселей затекает в видимые.
+    """
+    if factor <= 1:
+        return arr
+    h, w, _ = arr.shape
+    h2, w2 = h // factor, w // factor
+    a = arr[:h2 * factor, :w2 * factor].astype(np.float32)
+    alpha = a[..., 3:4]
+    rgb = a[..., :3] * alpha
+    block = lambda x: x.reshape(h2, factor, w2, factor, x.shape[-1]).mean(axis=(1, 3))
+    rgb_s = block(rgb)
+    a_s = block(alpha)
+    out = np.concatenate([np.divide(rgb_s, a_s, out=np.zeros_like(rgb_s), where=a_s > 1e-5), a_s], axis=-1)
+    return np.clip(out, 0, 1)
+
+
+def quantize(arr, levels):
+    """Ступенчатое квантование цвета — грубая, но рабочая пиксель-артизация."""
+    if not levels or levels <= 1:
+        return arr
+    rgb = np.round(arr[..., :3] * (levels - 1)) / (levels - 1)
+    alpha = (arr[..., 3:4] > 0.5).astype(np.float32)  # жёсткая альфа, без полутонов
+    return np.concatenate([rgb, alpha], axis=-1)
+
+
+def pack_atlas(frames, cols=None):
+    """Сетка кадров одинакового размера → (атлас, координаты кадров)."""
+    n = len(frames)
+    fh, fw, _ = frames[0][1].shape
+    cols = cols or math.ceil(math.sqrt(n))
+    rows = math.ceil(n / cols)
+    atlas = np.zeros((rows * fh, cols * fw, 4), dtype=np.float32)
+    coords = {}
+    for i, (name, img) in enumerate(frames):
+        r, c = divmod(i, cols)
+        atlas[r * fh:(r + 1) * fh, c * fw:(c + 1) * fw] = img
+        coords[name] = {'x': c * fw, 'y': r * fh, 'w': fw, 'h': fh}
+    return atlas, coords, (cols * fw, rows * fh)
+
+
+def write_phaser_atlas(json_path, image_name, coords, size, extra=None):
+    """Формат Phaser 3 `this.load.atlas()` (JSON Hash)."""
+    data = {
+        'frames': {
+            name: {
+                'frame': box,
+                'rotated': False,
+                'trimmed': False,
+                'spriteSourceSize': {'x': 0, 'y': 0, 'w': box['w'], 'h': box['h']},
+                'sourceSize': {'w': box['w'], 'h': box['h']},
+            } for name, box in coords.items()
+        },
+        'meta': {
+            'app': 'blender-kit/bake_sprites',
+            'image': image_name,
+            'format': 'RGBA8888',
+            'size': {'w': size[0], 'h': size[1]},
+            'scale': '1',
+            'forge': extra or {},
+        },
+    }
+    with open(json_path, 'w') as f:
+        json.dump(data, f, indent=1)
+    return json_path

@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Tiny Game — фикстура game-forge</title>
+<style>
+  body { margin: 0; background: #10131a; display: grid; place-items: center; height: 100vh; }
+  canvas { image-rendering: pixelated; }
+</style>
+<canvas id="game" width="320" height="240"></canvas>
+<script>
+// Минимальная игра для проверки самого конвейера: ловим падающие блоки
+// корзиной. Фиксированный шаг, вся логика в update(), рендер отдельно —
+// ровно те требования, которые ADAPTER.md предъявляет к настоящим играм.
+var W = 320, H = 240;
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+
+var basketX, score, lives, level, blocks, tick, over, won;
+
+function reset(opts) {
+  opts = opts || {};
+  basketX = W / 2;
+  score = 0;
+  lives = 3;
+  level = 1;
+  blocks = [];
+  tick = 0;
+  over = false;
+  won = false;
+}
+
+function spawn() {
+  blocks.push({ x: 20 + Math.random() * (W - 40), y: -8, vy: 0.8 + level * 0.25 });
+}
+
+function update() {
+  if (over) return;
+  tick++;
+  if (tick % Math.max(18, 60 - level * 6) === 0) spawn();
+
+  for (var i = blocks.length - 1; i >= 0; i--) {
+    var b = blocks[i];
+    b.y += b.vy;
+    if (b.y > H - 18 && b.y < H - 6 && Math.abs(b.x - basketX) < 26) {
+      blocks.splice(i, 1);
+      score += 10;
+      if (score >= level * 100) { level++; }
+      continue;
+    }
+    if (b.y > H) {
+      blocks.splice(i, 1);
+      lives--;
+      if (lives <= 0) over = true;
+    }
+  }
+  if (level > 5) { over = true; won = true; }
+}
+
+function draw() {
+  ctx.fillStyle = '#10131a';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#59d0ff';
+  for (var i = 0; i < blocks.length; i++) ctx.fillRect(blocks[i].x - 5, blocks[i].y - 5, 10, 10);
+  ctx.fillStyle = '#ffcc55';
+  ctx.fillRect(basketX - 26, H - 16, 52, 8);
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = '12px monospace';
+  ctx.fillText('SCORE ' + score + '  LVL ' + level + '  LIVES ' + lives, 8, 16);
+  if (over) ctx.fillText(won ? 'YOU WIN' : 'GAME OVER', W / 2 - 34, H / 2);
+}
+
+canvas.addEventListener('mousemove', function (e) {
+  var r = canvas.getBoundingClientRect();
+  basketX = (e.clientX - r.left) * (W / r.width);
+});
+
+reset();
+(function loop() { update(); draw(); requestAnimationFrame(loop); })();
+
+window.__TINY__ = {
+  reset: reset,
+  update: update,
+  draw: draw,
+  setBasket: function (x) { basketX = Math.max(0, Math.min(W, x)); },
+  state: function () {
+    return { over: over, won: won, score: score, lives: lives, level: level, blocks: blocks, W: W, H: H };
+  },
+};
+</script>

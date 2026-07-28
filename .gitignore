@@ -1,0 +1,14 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# артефакты прогонов: скриншоты, сырые данные, отчёты
+.forge/*
+!.forge/JOURNAL.md
+**/.forge/*
+!**/.forge/JOURNAL.md
+
+# ключи и локальные настройки — никогда
+.env
+*.local

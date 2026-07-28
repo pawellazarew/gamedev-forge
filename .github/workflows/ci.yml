@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Установить зависимости
+        working-directory: game-forge
+        run: npm ci || npm install
+
+      - name: Скачать Chromium
+        working-directory: game-forge
+        run: npx playwright install --with-deps chromium
+
+      - name: Синтаксис всех модулей
+        run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/tiny-game/forge/*.mjs; do node --check "$f"; done
+
+      - name: doctor
+        run: node game-forge/bin/forge.mjs doctor
+
+      # Фикстура — эталонная игра с минимальным адаптером: если конвейер цел,
+      # сценарий проходит, probe чистый, а ветеран обыгрывает казуала.
+      - name: play (сценарии + ассерты)
+        run: node game-forge/bin/forge.mjs play fixtures/tiny-game
+
+      - name: probe (метрики и ошибки консоли)
+        run: node game-forge/bin/forge.mjs probe fixtures/tiny-game --seconds 4 --strict
+
+      - name: sim + analyze (детерминированная симуляция)
+        run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000
+
+      - name: Навык должен влиять на исход
+        run: |
+          node -e '
+            const fs = require("fs");
+            const a = JSON.parse(fs.readFileSync("fixtures/tiny-game/.forge/latest-sim/analysis.json", "utf8"));
+            const get = (n) => a.bots.find((b) => b.bot === n)?.winrate ?? 0;
+            const gap = get("veteran") - get("casual");
+            console.log("casual", get("casual"), "veteran", get("veteran"), "разрыв", gap.toFixed(2));
+            if (gap < 0) { console.error("ветеран играет хуже казуала — конвейер или бот сломан"); process.exit(1); }
+          '
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: forge-artifacts
+          path: fixtures/tiny-game/.forge/
+          retention-days: 7

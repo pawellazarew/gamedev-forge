@@ -1,0 +1,16 @@
+{
+  "name": "game-forge",
+  "version": "0.1.0",
+  "description": "Автономный конвейер разработки веб-игр: агент сам играет, смотрит, измеряет и критикует.",
+  "type": "module",
+  "bin": {
+    "forge": "./bin/forge.mjs"
+  },
+  "scripts": {
+    "doctor": "node bin/forge.mjs doctor"
+  },
+  "dependencies": {
+    "playwright-core": "^1.60.0"
+  },
+  "license": "MIT"
+}
