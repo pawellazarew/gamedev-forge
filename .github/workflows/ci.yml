@@ -47,17 +47,38 @@ jobs:
         run: node game-forge/bin/forge.mjs probe fixtures/tiny-game --seconds 4 --strict
 
       # Зелёный probe на здоровой игре ничего не доказывает, пока не показано,
-      # что сломанную он валит. dead-game рисует один кадр и больше не
-      # перерисовывается (кадры пробы идут, кадров игры ноль); zombie-game
-      # крутит пустой rAF — кадры игры полны, отрисовки нет.
+      # что сломанную он валит. dead-game не крутит rAF вовсе; zombie-game
+      # крутит пустой (кадры игры полны, отрисовки нет); ghost-backbuffer
+      # рисует каждый кадр в невидимый буфер.
+      #
+      # Требуем именно код 2 (красный вердикт) и имя провалившейся проверки:
+      # «любой ненулевой код» означал бы, что опечатка в пути к фикстуре или
+      # ненайденный браузер читаются как «гейт сработал».
       - name: probe обязан валить мёртвый рендер
         run: |
-          for game in dead-game zombie-game; do
-            if node game-forge/bin/forge.mjs probe "fixtures/$game" --seconds 3 --strict; then
-              echo "::error::probe пропустил $game — игру, которая ничего не рисует"
+          check_red() {
+            set +e
+            node game-forge/bin/forge.mjs probe "fixtures/$1" --seconds 3 --strict
+            code=$?
+            set -e
+            if [ "$code" -ne 2 ]; then
+              echo "::error::probe на $1 вышел с кодом $code вместо 2 — гейт не сработал или вовсе не запустился"
               exit 1
             fi
-          done
+            node -e '
+              const fs = require("fs");
+              const p = JSON.parse(fs.readFileSync(`fixtures/${process.argv[1]}/.forge/latest-probe/probe.json`, "utf8"));
+              const want = process.argv[2];
+              const c = p.checks.find((c) => c.name === want);
+              if (p.verdict !== "fail" || c?.status !== "fail") {
+                console.error(`::error::${process.argv[1]}: ожидали красную проверку "${want}", получили verdict=${p.verdict} ${want}=${c?.status}`);
+                process.exit(1);
+              }
+            ' "$1" "$2"
+          }
+          check_red dead-game sample
+          check_red zombie-game render
+          check_red ghost-backbuffer render
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000

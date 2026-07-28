@@ -14,6 +14,10 @@ const DEFAULTS = {
   entry: 'index.html',
   viewport: 'desktop',
   renderer: '2d',        // '2d' | 'webgl' — влияет на флаги запуска браузера
+  // 'continuous' — игра перерисовывается каждый кадр (аркады, экшены);
+  // 'on-demand'  — рисует только по событию (пошаговые, Wordle-подобные).
+  // Во втором случае «за 3 секунды ничего не нарисовано» — норма, а не поломка.
+  renderMode: 'continuous',
   adapter: null,
   scenarios: null,
   references: 'forge/references',
@@ -128,16 +132,21 @@ function makePreload() {
      * изнутри колбэка.
      */
     const timed = (cb) => (ts) => {
+      const f = window.__forgeFrames;
       const t0 = performance.now();
+      // inCb — «сейчас выполняется колбэк игры». Без этого признака любая
+      // отрисовка на странице (setInterval, обработчик, накладной график)
+      // засчитывалась бы игре, и рисующая менюшка ручалась бы за мёртвый
+      // игровой цикл.
+      if (f) f.inCb++;
       try {
         cb(ts);
       } finally {
-        const f = window.__forgeFrames;
         // Копим в pending, а закрываем кадр в tickProbe: два колбэка по 10 мс
         // в одном кадре — это кадр за 20 мс, а не два кадра по 10.
         // cbPending считает сами вызовы: кадр, в котором игра ничего не считала,
         // и кадр, в котором игра вообще не рисовала, — разные вещи.
-        if (f) { f.pending += performance.now() - t0; f.cbPending++; }
+        if (f) { f.pending += performance.now() - t0; f.cbPending++; f.inCb--; }
       }
     };
 
@@ -155,6 +164,28 @@ function makePreload() {
     // а получить его иначе можно только через дорогую трассировку.
     // Считаем ПОКАДРОВО: среднее прячет пик, а тормозит игра именно на пике —
     // один кадр с 600 вызовами при среднем 7 остаётся незамеченным.
+    //
+    // «Кадр игры» и «кадр, в котором игра рисовала» — разные вещи: пустой
+    // `requestAnimationFrame(loop)` даёт полный набор кадров игры на намертво
+    // застывшей картинке.
+    //
+    // Кадр помечается нарисованным при ДВУХ условиях: команда пришла изнутри
+    // колбэка игры и адресована поверхности, которую видит игрок. Иначе за
+    // мёртвый игровой канвас ручались бы закадровый бэкбуфер, спрятанный
+    // `display:none` помощник или счётчик кадров, который рисует не игра.
+    const composited = new WeakMap();
+    const visible = (cv) => {
+      if (!cv || !cv.isConnected) return false;   // OffscreenCanvas сюда же: isConnected нет
+      let v = composited.get(cv);
+      // clientWidth дёргает лейаут, поэтому спрашиваем один раз на канвас
+      // за всё время: игры не прячут и не показывают игровой канвас на ходу.
+      if (v === undefined) { v = cv.clientWidth > 0 && cv.clientHeight > 0; composited.set(cv, v); }
+      return v;
+    };
+    // Флаг, а не счётчик: нужен факт, а не количество. Отметив кадр, дальше
+    // выходим сразу — за каждый fillRect платить проверками незачем.
+    const markPaint = (f, cv) => { if (f && f.inCb && !f.painted && visible(cv)) f.painted = 1; };
+
     window.__forgeDraws = 0;
     for (const proto of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
       if (!proto) continue;
@@ -164,18 +195,14 @@ function makePreload() {
         proto.prototype[m] = function (...args) {
           window.__forgeDraws++;
           const f = window.__forgeFrames;
-          if (f) f.drawsPending++;
+          // Счётчик draw call'ов считает ВСЁ (это нагрузка на GPU),
+          // а признак отрисовки — только то, что видит игрок.
+          if (f) { f.drawsPending++; markPaint(f, this.canvas); }
           return orig.apply(this, args);
         };
       }
     }
 
-    // «Кадр игры» и «кадр, в котором игра рисовала» — разные вещи: пустой
-    // `requestAnimationFrame(loop)` даёт полный набор кадров игры на намертво
-    // застывшей картинке. Отличить одно от другого можно только по командам
-    // рисования, поэтому помечаем кадр, в котором канвас трогали.
-    // Флаг, а не счётчик: нужен факт, а не количество, и платить за каждый
-    // fillRect подсчётом незачем.
     for (const proto of [window.CanvasRenderingContext2D, window.OffscreenCanvasRenderingContext2D]) {
       if (!proto) continue;
       for (const m of ['fillRect', 'strokeRect', 'clearRect', 'drawImage', 'fill', 'stroke',
@@ -183,8 +210,7 @@ function makePreload() {
         const orig = proto.prototype[m];
         if (!orig) continue;
         proto.prototype[m] = function (...args) {
-          const f = window.__forgeFrames;
-          if (f) f.painted = 1;
+          markPaint(window.__forgeFrames, this.canvas);
           return orig.apply(this, args);
         };
       }
@@ -198,7 +224,7 @@ function makePreload() {
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
-      gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0,
+      gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
@@ -225,8 +251,10 @@ function makePreload() {
 
         const frameDraws = f.drawsPending;
         f.drawsPending = 0;
-        // Отрисовка — команды 2D-канваса ИЛИ draw call'ы WebGL.
-        if (f.painted || frameDraws > 0) f.paintFrames++;
+        // Отрисовку помечают оба хука — и 2D, и WebGL, — поэтому здесь один
+        // флаг. Сбрасывать его обязательно: иначе одна отрисовка помечает
+        // нарисованными все последующие кадры.
+        if (f.painted) f.paintFrames++;
         f.painted = 0;
         if (f.draws.length < 4000) f.draws.push(frameDraws);
         if (frameDraws > f.drawsMax) f.drawsMax = frameDraws;
@@ -239,7 +267,7 @@ function makePreload() {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
-        gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0,
+        gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0,
         draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;

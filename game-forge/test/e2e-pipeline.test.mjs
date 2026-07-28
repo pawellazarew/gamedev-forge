@@ -133,7 +133,7 @@ describe('достоверность замера на живой страниц
 
     assert.ok(metrics.gameFrames >= 20, `кадров игры ${metrics.gameFrames} — цикл жив`);
     assert.equal(metrics.paintFrames, 0, 'а команд рисования нет ни одной');
-    assert.equal(metrics.pixelsChanged, false, 'и ни один пиксель не изменился');
+    assert.equal(metrics.pixelChange, 0, 'и ни один пиксель канваса не изменился');
     assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'pass',
       'по кадрам игры выборка полноценная — тем и опасен зомби');
     assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'fail');
@@ -143,8 +143,48 @@ describe('достоверность замера на живой страниц
   test('живая игра рисует и это видно', async () => {
     const { metrics } = await probe(cfg, { seconds: 2 });
     assert.ok(metrics.paintFrames >= 20, `кадров с отрисовкой ${metrics.paintFrames}`);
-    assert.equal(metrics.pixelsChanged, true);
+    assert.ok(metrics.pixelChange > 0, `пиксели канваса менялись на ${metrics.pixelChange}`);
     assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'pass');
+  });
+
+  test('отрисовка в закадровый буфер не ручается за застывший экран', async () => {
+    // Потерянный blit: сцена честно рисуется каждый кадр — в канвас, которого
+    // игрок не видит. Признак отрисовки обязан быть привязан к видимой
+    // поверхности, иначе за мёртвый экран ручается закадровый помощник.
+    const ghostCfg = await loadConfig(path.join(ROOT, 'fixtures/ghost-backbuffer'));
+    const { metrics } = await probe(ghostCfg, { seconds: 2 });
+
+    assert.equal(metrics.paintFrames, 0, 'закадровый канвас отрисовкой не считается');
+    assert.ok(metrics.gameFrames >= 20, 'при этом цикл жив и рисует вовсю');
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'fail');
+    assert.equal(metrics.verdict, 'fail');
+  });
+
+  test('игра, рисующая по событию, не объявляется мёртвой', async () => {
+    // Форма Wordle: живой цикл, отрисовка только по вводу. Без opt-out гейт
+    // красит здоровую игру красным — поэтому у неё renderMode: 'on-demand'.
+    const dirtyCfg = await loadConfig(path.join(ROOT, 'fixtures/dirty-render'));
+    const onDemand = await probe(dirtyCfg, { seconds: 2 });
+    assert.equal(onDemand.metrics.renderMode, 'on-demand');
+    assert.equal(onDemand.metrics.checks.find((c) => c.name === 'render').status, 'warn');
+    assert.notEqual(onDemand.metrics.verdict, 'fail', 'здоровая игра не должна валить CI');
+
+    // Та же игра без объявленного режима — красная: молчать о застывшем
+    // рендере нельзя, пока игра не сказала, что рисует по событию.
+    const strict = await probe({ ...dirtyCfg, renderMode: 'continuous' }, { seconds: 2 });
+    assert.equal(strict.metrics.checks.find((c) => c.name === 'render').status, 'fail');
+  });
+
+  test('редкая отрисовка видна как редкая — флаг кадра не залипает', async () => {
+    // Фикстура рисует раз в 60 кадров. Без сброса флага одна отрисовка
+    // пометила бы все последующие кадры, и доля стала бы стопроцентной.
+    const blinkCfg = await loadConfig(path.join(ROOT, 'fixtures/blink-game'));
+    const { metrics } = await probe(blinkCfg, { seconds: 3 });
+
+    assert.ok(metrics.paintFrames > 0, 'что-то нарисовано');
+    assert.ok(metrics.paintFrames < metrics.gameFrames / 4,
+      `${metrics.paintFrames} из ${metrics.gameFrames} — доля обязана быть низкой`);
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'warn');
   });
 
   test('упавший start() отменяет замер и оставляет красный след', async () => {
@@ -198,6 +238,11 @@ describe('бюджет draw calls на живой странице', opts, () =>
     assert.ok(metrics.drawCallsMedian <= 10, `медиана ${metrics.drawCallsMedian} — обычные кадры дешёвые`);
     assert.ok(metrics.drawCallsMax >= 600, `пик ${metrics.drawCallsMax}`);
     assert.equal(metrics.checks.find((c) => c.name === 'draw-calls').status, 'fail');
+
+    // Отрисовку WebGL признак кадра обязан видеть так же, как 2D: иначе любая
+    // WebGL-игра краснела бы «рендер мёртв», а тестов на это не было.
+    assert.ok(metrics.paintFrames >= 20, `кадров с отрисовкой ${metrics.paintFrames} — WebGL считается отрисовкой`);
+    assert.notEqual(metrics.checks.find((c) => c.name === 'render').status, 'fail');
   });
 });
 

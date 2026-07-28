@@ -2,13 +2,35 @@ import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { applyStep } from './scenario.mjs';
 import { resolveViewport } from './browser.mjs';
-import { frameStats } from './png.mjs';
+import { frameStats, pixelDiffRatio } from './png.mjs';
 import { runDir, linkLatest, writeJson, mean, median, percentile, filterNoise, color, verdictMark } from './util.mjs';
 
 /** Меньше этого числа кадров — мерить нечего, вердикт по производительности пуст. */
 export const MIN_FRAMES = 5;
 /** Кадров хватает на число, но не на доверие к нему. */
 export const THIN_FRAMES = 20;
+/** Ниже этой доли перерисованных кадров игра рисует урывками, а не живёт. */
+export const MIN_PAINT_SHARE = 0.5;
+/**
+ * Доля изменившихся пикселей, ниже которой картинка считается застывшей.
+ * Замерено: у застывших фикстур (zombie, ghost-backbuffer, dirty-render) и у
+ * WebGL-игры, перерисовывающей одинаковые кадры, ровно 0; у живых — от 0.0006
+ * (Phaser 3 на спокойной сцене) до 0.026. Порог поставлен в пустоту между
+ * ними и намеренно ближе к нулю: ошибиться в сторону «шевелится» безопаснее,
+ * чем обвинить живую игру.
+ */
+export const PIXEL_CHANGE_EPS = 0.0001;
+/** Сколько ждём start(): зависший старт должен давать красный прогон, а не висеть в CI. */
+const START_TIMEOUT_MS = 30000;
+
+/** Промис с крайним сроком: у page.evaluate своего таймаута нет. */
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); }),
+  ]);
+}
 
 /**
  * Объективные измерения без участия человека: работа главного потока в кадре,
@@ -43,15 +65,7 @@ export async function probe(cfg, opts = {}) {
       // Мерить надо тяжёлую сцену, а не стартовую комнату: `--scenario storm-peak`
       // прогоняет шаги обычного сценария (без съёмки) и только потом включает
       // счётчики. Без этого требование «замерить пик» не автоматизируется.
-      try {
-        await prepareScene(ctx.page, sc, cfg);
-      } catch (err) {
-        // Сорванный замер должен остаться СЛЕДОМ, а не тишиной: иначе
-        // latest-probe продолжает указывать на прошлый зелёный прогон, и
-        // `report`/`critique` выдают вчерашние числа за сегодняшние.
-        writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario: sc.name, headless, reason: err.message });
-        throw err;
-      }
+      await prepareScene(ctx.page, sc, cfg);
       scenePath = sc.name;
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
@@ -62,14 +76,28 @@ export async function probe(cfg, opts = {}) {
       // выбрасываем — start(), вернувший что-нибудь несериализуемое, ронял бы
       // evaluate на ровном месте.
       try {
-        await ctx.page.evaluate(() => {
-          const api = window.__FORGE__;
-          if (api && typeof api.start === 'function') api.start({ mode: 0 });
-        });
+        // `async` и `await` тут несущие: без них промис асинхронного start()
+        // выбрасывается, evaluate возвращается сразу, а замер идёт по
+        // стартовому экрану — и падение start() снова оказывается проглочено.
+        // Значение всё равно не возвращаем: несериализуемый результат ронял бы
+        // evaluate на ровном месте.
+        const started = await withTimeout(
+          ctx.page.evaluate(async () => {
+            const api = window.__FORGE__;
+            if (!api) return 'нет __FORGE__';
+            if (typeof api.start !== 'function') return 'нет start()';
+            await api.start({ mode: 0 });
+            return null;
+          }),
+          START_TIMEOUT_MS,
+          `start() не завершился за ${START_TIMEOUT_MS / 1000} с`,
+        );
+        // Адаптер подключён — значит start() обязателен по контракту. Молча
+        // мерить стартовый экран из-за опечатки в имени метода нельзя.
+        if (adapter && started) throw new Error(`${started} — адаптер обязан ставить window.__FORGE__.start()`);
       } catch (err) {
-        const reason = `__FORGE__.start() упал: ${String(err?.message || err).slice(0, 300)}`;
-        writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario: null, headless, reason });
-        throw new Error(`${reason}. Замер отменён: probe померил бы стартовый экран вместо игры.`);
+        throw new Error(`__FORGE__.start() упал: ${String(err?.message || err).slice(0, 300)}. `
+          + 'Замер отменён: probe померил бы стартовый экран вместо игры.');
       }
     }
 
@@ -81,7 +109,10 @@ export async function probe(cfg, opts = {}) {
     // API (воркер, WebGPU, DOM/CSS): тогда команд рисования не видно, а пиксели
     // всё равно меняются, и красный вердикт был бы враньём. Снимаем ДО сброса
     // счётчиков, чтобы полсотни миллисекунд самого скриншота не попали в окно.
-    const before = await ctx.page.screenshot();
+    //
+    // Снимаем КАНВАС, а не страницу: счётчик кадров в DOM рядом с игрой — это
+    // «пиксели меняются» при намертво застывшей игре.
+    const before = await shootCanvas(ctx.page, sc?.selector);
 
     await ctx.page.evaluate(() => window.__forgeResetFrames?.());
     await ctx.page.waitForTimeout(seconds * 1000);
@@ -112,44 +143,75 @@ export async function probe(cfg, opts = {}) {
       canvasStats = { error: String(err.message || err) };
     }
 
+    // Доля изменившихся пикселей, а не «побайтово равны»: моргающий счётчик
+    // не должен выдавать застывшую игру за живую.
+    let pixelChange = null;
+    try {
+      const after = await shootCanvas(ctx.page, sc?.selector);
+      pixelChange = +pixelDiffRatio(before, after).toFixed(4);
+    } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
+
     const metrics = computeMetrics(raw, {
       cfg, viewport, seconds, scenario: scenePath, headless,
       loadMs: ctx.loadMs,
       bundleKb: Math.round(ctx.server.bytes() / 1024),
       errors: filterNoise(ctx.errors()),
       canvas: canvasStats,
-      pixelsChanged: !before.equals(shot),
+      pixelChange,
     });
 
     writeJson(path.join(dir, 'probe.json'), metrics);
     linkLatest(cfg.dir, 'probe', dir);
     return { metrics, dir };
+  } catch (err) {
+    // Любой срыв — сцена, старт, упавший скриншот, схлопнувшийся браузер —
+    // обязан оставить красный артефакт. Иначе после него latest-probe
+    // указывает на прошлый зелёный прогон, и `report`/`critique` выдают
+    // вчерашние числа за сегодняшние.
+    writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario: sc?.name ?? null, headless, reason: String(err?.message || err) });
+    throw err;
   } finally {
     await ctx.dispose();
   }
 }
 
 /** Пустые счётчики: замер не состоялся, и метрики должны говорить именно это. */
+// paintFrames: null — «не мерили». Ноль означал бы «игра не рисовала», и
+// артефакт сорванного замера утверждал бы про рендер то, чего никто не видел.
 const NO_MEASUREMENT = {
   frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0,
-  gameFrames: 0, paintFrames: 0, draws: [], drawsMax: 0, drawsTotal: 0,
+  gameFrames: 0, paintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0,
   elapsedMs: 0, heapBytes: null, state: null,
 };
 
-/** Артефакт сорванного замера: полноценный probe.json с красным вердиктом. */
+/**
+ * Артефакт сорванного замера: полноценный probe.json с красным вердиктом.
+ * Сама по себе упасть не имеет права — иначе подменит собой исходную ошибку,
+ * ради которой её и вызвали.
+ */
 function writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario, headless, reason }) {
-  const metrics = computeMetrics(NO_MEASUREMENT, {
-    cfg, viewport, seconds, scenario, headless,
-    loadMs: ctx.loadMs,
-    bundleKb: Math.round(ctx.server.bytes() / 1024),
-    errors: filterNoise(ctx.errors()),
-  });
-  metrics.checks.unshift({ name: 'scene', status: 'fail', detail: reason });
-  metrics.verdict = 'fail';
-  const dir = runDir(cfg.dir, 'probe', stamp);
-  writeJson(path.join(dir, 'probe.json'), metrics);
-  linkLatest(cfg.dir, 'probe', dir);
-  return dir;
+  try {
+    const metrics = computeMetrics(NO_MEASUREMENT, {
+      cfg, viewport, seconds, scenario, headless,
+      loadMs: ctx.loadMs,
+      bundleKb: Math.round(ctx.server.bytes() / 1024),
+      errors: filterNoise(ctx.errors()),
+    });
+    metrics.checks.unshift({ name: 'scene', status: 'fail', detail: reason });
+    metrics.verdict = 'fail';
+    const dir = runDir(cfg.dir, 'probe', stamp);
+    writeJson(path.join(dir, 'probe.json'), metrics);
+    linkLatest(cfg.dir, 'probe', dir);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+/** Снимок игрового канваса; если его нет — страницы целиком. */
+async function shootCanvas(page, selector) {
+  const el = await page.$(selector || 'canvas');
+  return (el || page).screenshot();
 }
 
 async function findScenario(cfg, name) {
@@ -190,7 +252,7 @@ export async function prepareScene(page, sc, cfg) {
  */
 export function computeMetrics(raw, {
   cfg, viewport, seconds, scenario = null, headless = true,
-  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelsChanged = null,
+  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null,
 }) {
   const budgetMs = cfg.budgets?.frameMs ?? 16.7;
 
@@ -247,7 +309,10 @@ export function computeMetrics(raw, {
     // Кадры с фактической отрисовкой: живой цикл rAF ещё не значит, что игра
     // что-то нарисовала.
     paintFrames: raw.paintFrames ?? null,
-    pixelsChanged,
+    // Доля изменившихся пикселей канваса между началом и концом окна;
+    // null — сравнить не удалось, и это «не знаем», а не «застыло».
+    pixelChange,
+    renderMode: cfg.renderMode ?? 'continuous',
     workSamples,
     frameSamples,
     longFrames: raw.longFrames,
@@ -331,19 +396,37 @@ export function evaluateBudgets(m, b) {
   // видно» + «ни один пиксель не изменился»; если пиксели меняются, это
   // предупреждение о слепой зоне инструментирования, а не провал игры.
   const paintFrames = m.paintFrames ?? null;
-  if (paintFrames != null) {
-    const changed = m.pixelsChanged !== false;   // null — «не мерили», не обвиняем
-    const renderStatus = paintFrames >= MIN_FRAMES ? 'pass' : changed ? 'warn' : 'fail';
-    add('render', renderStatus,
-      paintFrames >= MIN_FRAMES
-        ? `${paintFrames} кадров с отрисовкой из ${gameFrames} кадров игры`
+  // При нуле кадров игры говорить о её отрисовке нечего — там уже красный
+  // sample, и «цикл крутится» было бы прямой ложью.
+  if (paintFrames != null && gameFrames > 0) {
+    const share = paintFrames / gameFrames;
+    // Доля, а не абсолютное число: пять перерисованных кадров из семисот —
+    // это умерший на второй секунде рендер, а не живая игра.
+    const enoughPaint = paintFrames >= MIN_FRAMES && share >= MIN_PAINT_SHARE;
+    const frozen = m.pixelChange != null && m.pixelChange < PIXEL_CHANGE_EPS;
+    const onDemand = m.renderMode === 'on-demand';
+    const pct = `${Math.round(share * 100)}%`;
+
+    // «Рисует каждый кадр, а картинка не меняется» — это потерянный blit,
+    // рендер в никуда или застрявшая сцена. Не провал (WebGL-игра честно
+    // перерисовывает одинаковые кадры), но и не молчание.
+    const status = enoughPaint ? (frozen ? 'warn' : 'pass')
+      : paintFrames > 0 ? 'warn'
+        : !frozen ? 'warn'
+          : onDemand ? 'warn' : 'fail';
+
+    add('render', status,
+      enoughPaint
+        ? `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
+          + (frozen ? ' — но ни один пиксель канваса не изменился: рисунок уходит в никуда (потерянный blit, закадровый буфер, застывшая сцена)' : '')
         : paintFrames > 0
-          ? `только ${paintFrames} кадров с отрисовкой из ${gameFrames} кадров игры — игра почти не перерисовывается`
-          : changed
-            ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели меняются — `
+          ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
+          : !frozen
+            ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели канваса меняются — `
               + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
-            : `цикл rAF крутится (${gameFrames} кадров игры), но за ${m.seconds ?? '?'} с игра не выдала `
-              + 'ни одной команды рисования и ни один пиксель не изменился — рендер мёртв');
+            : `за ${m.seconds ?? '?'} с игра не выдала ни одной команды рисования и ни один пиксель канваса `
+              + `не изменился (${gameFrames} кадров игры вхолостую) — рендер мёртв`
+              + (onDemand ? '. renderMode: on-demand — для игры, которая рисует по событию, это норма' : ''));
   }
 
   const budgetMs = b.frameMs ?? 16.7;

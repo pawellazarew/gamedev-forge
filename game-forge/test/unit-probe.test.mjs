@@ -198,7 +198,7 @@ describe('живой цикл против живого рендера', () => {
   test('пустой rAF не считается отрисовкой', () => {
     // Из ревью: пустой `requestAnimationFrame(loop)` давал 143/143 кадров игры
     // и зелёный вердикт на застывшей картинке. Кадров игры для гейта мало.
-    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelsChanged: false });
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0 });
 
     assert.equal(m.gameFrames, 359, 'цикл жив');
     assert.equal(m.paintFrames, 0, 'а нарисовано ничего');
@@ -211,32 +211,87 @@ describe('живой цикл против живого рендера', () => {
   test('меняющиеся пиксели без команд рисования — предупреждение, не приговор', () => {
     // Воркер, WebGPU, DOM/CSS: инструментирование их не видит, но игра живёт.
     // Красный вердикт тут был бы враньём про игру.
-    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelsChanged: true });
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'warn');
     assert.match(render(m).detail, /мимо 2D\/WebGL/);
   });
 
   test('пиксели не сравнивали — тоже не приговор', () => {
     const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}) });
-    assert.equal(m.pixelsChanged, null);
+    assert.equal(m.pixelChange, null);
     assert.equal(render(m).status, 'warn');
+  });
+
+  test('игра, рисующая по событию, не объявляется мёртвой', () => {
+    // Пошаговая игра (Wordle-подобная) за окно замера без ввода не рисует
+    // ничего — и это норма. Красный тут блокировал бы здоровую игру.
+    const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /on-demand/);
+    assert.notEqual(m.verdict, 'fail');
   });
 
   test('нормальная отрисовка проходит', () => {
-    const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelsChanged: true });
+    const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'pass');
-    assert.match(render(m).detail, /100 кадров с отрисовкой/);
+    assert.match(render(m).detail, /100 из 100 кадров игры/);
+  });
+
+  test('рисует каждый кадр, а пиксели не двигаются — рисунок уходит в никуда', () => {
+    // Потерянный blit: сцена рисуется в закадровый буфер и не переносится
+    // на экран. Не провал (WebGL честно перерисовывает одинаковые кадры),
+    // но и не молчание.
+    const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelChange: 0 });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /уходит в никуда/);
+  });
+
+  test('доля, а не абсолютное число: 5 кадров из 720 — не живой рендер', () => {
+    // Порог MIN_FRAMES здесь не годится: чем длиннее --seconds, тем слабее
+    // становился бы гейт. Рендер, умерший на второй секунде, — обычная авария.
+    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5 }), {
+      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0,
+    });
+    assert.notEqual(render(m).status, 'pass');
+    assert.match(render(m).detail, /5 из 720/);
+  });
+
+  test('половина кадров с отрисовкой — уже жизнь', () => {
+    const m = computeMetrics(raw({ paintFrames: 60 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
+    assert.equal(render(m).status, 'pass');
   });
 
   test('игра, рисующая урывками, — предупреждение', () => {
-    const m = computeMetrics(raw({ paintFrames: 3 }), { ...opts, cfg: cfg({}), pixelsChanged: true });
+    const m = computeMetrics(raw({ paintFrames: 3 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'warn');
     assert.match(render(m).detail, /почти не перерисовывается/);
+  });
+
+  test('без кадров игры проверка молчит, а не выдумывает крутящийся цикл', () => {
+    // dead-game: rAF не вызывается вовсе. «Цикл rAF крутится (0 кадров игры)» —
+    // это ложь в одну строку, и её видел бы человек и агент-критик.
+    const m = computeMetrics(raw({ frames: 90, gameFrames: 0, paintFrames: 0, work: Array(90).fill(0) }), {
+      ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0,
+    });
+    assert.equal(render(m), undefined, 'про отрисовку сказать нечего');
+    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'fail', 'красное говорит sample');
   });
 
   test('старый probe.json без paintFrames проверку не получает', () => {
     const legacy = { frames: 100, gameFrames: 100, workSamples: 100, frameSamples: 100, frameWorkMs: 1, frameWorkP99Ms: 2, errorCount: 0, errors: [] };
     assert.equal(evaluateBudgets(legacy, {}).find((c) => c.name === 'render'), undefined);
+  });
+
+  test('артефакт сорванного замера не выдумывает диагноз про рендер', () => {
+    // Раньше abort-артефакт утверждал «игра рисует мимо 2D/WebGL» — при том,
+    // что ни одного скриншота сравнено не было. Это уходило в отчёт и критику.
+    const m = computeMetrics(
+      { frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0, gameFrames: 0, paintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0, elapsedMs: 0, heapBytes: null, state: null },
+      { ...opts, cfg: cfg({}) },
+    );
+    assert.equal(m.paintFrames, null);
+    assert.equal(render(m), undefined);
   });
 });
 
