@@ -9,9 +9,9 @@ jobs:
   forge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
 
@@ -51,9 +51,12 @@ jobs:
             if (gap < 0) { console.error("ветеран играет хуже казуала — конвейер или бот сломан"); process.exit(1); }
           '
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: always()
         with:
           name: forge-artifacts
           path: fixtures/tiny-game/.forge/
+          # Каталог начинается с точки, а upload-artifact по умолчанию скрытые
+          # файлы пропускает — без этого флага артефакты молча теряются
+          include-hidden-files: true
           retention-days: 7
