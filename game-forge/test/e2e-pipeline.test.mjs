@@ -46,6 +46,33 @@ describe('probe', opts, () => {
   });
 });
 
+describe('probe --scenario', opts, () => {
+  test('доводит игру до нужной сцены перед замером', async () => {
+    // Без этого 20 секунд замера могли пройти в стартовой комнате, и
+    // требование «мерить пиковую сцену» оставалось на совести человека
+    const plain = await probe(cfg, { seconds: 2 });
+    const late = await probe(cfg, { seconds: 2, scenario: 'late-game' });
+    assert.equal(late.metrics.scenario, 'late-game');
+    assert.equal(plain.metrics.scenario, null);
+    assert.ok(late.metrics.state.level > plain.metrics.state.level,
+      `сцена должна быть дальше: ${late.metrics.state.level} vs ${plain.metrics.state.level}`);
+  });
+
+  test('несуществующая сцена — понятная ошибка со списком доступных', async () => {
+    await assert.rejects(() => probe(cfg, { seconds: 1, scenario: 'нет-такой' }), /Есть: smoke, late-game/);
+  });
+});
+
+describe('бюджет draw calls на живой странице', opts, () => {
+  test('редкий тяжёлый кадр валит бюджет, хотя среднее в норме', async () => {
+    const spikeCfg = await loadConfig(path.join(ROOT, 'fixtures/spike-frame'));
+    const { metrics } = await probe(spikeCfg, { seconds: 4 });
+    assert.ok(metrics.drawCallsMedian <= 10, `медиана ${metrics.drawCallsMedian} — обычные кадры дешёвые`);
+    assert.ok(metrics.drawCallsMax >= 600, `пик ${metrics.drawCallsMax}`);
+    assert.equal(metrics.checks.find((c) => c.name === 'draw-calls').status, 'fail');
+  });
+});
+
 describe('сценарии', opts, () => {
   test('play проходит и снимает кадры', async () => {
     const { summary, dir } = await runScenarios(cfg, { kind: 'play' });

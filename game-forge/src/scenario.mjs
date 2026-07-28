@@ -69,7 +69,11 @@ export async function runScenarios(cfg, opts = {}) {
   return { summary, dir };
 }
 
-async function applyStep(page, step, ctx) {
+/**
+ * Выполнить один шаг сценария. Экспортируется, чтобы probe мог довести игру
+ * до нужной сцены тем же механизмом, а не заводить второй похожий.
+ */
+export async function applyStep(page, step, ctx) {
   const { sc, i, shotsDir, shots, checks } = ctx;
 
   if (step.goto) await page.goto(step.goto, { waitUntil: 'load' });
@@ -135,7 +139,7 @@ async function applyStep(page, step, ctx) {
     checks.push({ name: msg, status: ok ? 'pass' : 'fail', detail: ok ? '' : `условие ложно на шаге ${i + 1}` });
   }
 
-  if (step.shot) {
+  if (step.shot && !ctx.skipShots) {
     const file = path.join(shotsDir, `${sc.name}-${step.shot}.png`);
     const target = step.full ? page : (await page.$(sc.selector || 'canvas')) || page;
     await target.screenshot({ path: file });

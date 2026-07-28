@@ -15,7 +15,7 @@ ${color.b('forge')} — конвейер автономной разработк
 
   forge doctor                        проверить окружение
   forge init <gameDir>                создать forge.config.mjs и заготовки
-  forge probe <gameDir> [--seconds 8] [--viewport desktop] [--headed]
+  forge probe <gameDir> [--seconds 8] [--viewport desktop] [--headed] [--scenario storm-peak]
   forge shots <gameDir> [--only <сценарий>]
   forge play  <gameDir> [--only <сценарий>]     то же + падает на непройденных expect
   forge sim   <gameDir> [--runs 60] [--bot <имя>] [--max-ticks N] [--seed 1000]
@@ -25,6 +25,7 @@ ${color.b('forge')} — конвейер автономной разработк
   forge all   <gameDir> [--runs 40]   probe + shots + sim + analyze + report
 
 Флаги: --seed N, --viewport desktop|wide|portrait|phone|phoneLandscape|tablet, --headed
+       --scenario <имя> — довести игру до тяжёлой сцены перед замером
 `;
 
 const cmd = process.argv[2];
@@ -115,6 +116,7 @@ async function cmdProbe(c) {
     viewport: args.viewport || c.viewport,
     seed: num(args.seed, 1),
     headless: !args.headed,
+    scenario: typeof args.scenario === 'string' ? args.scenario : null,
     stamp: stamp(),
   });
   printProbe(metrics);
