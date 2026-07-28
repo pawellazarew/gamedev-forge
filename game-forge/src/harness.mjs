@@ -129,12 +129,9 @@ function makePreload() {
         cb(ts);
       } finally {
         const f = window.__forgeFrames;
-        if (f) {
-          const work = performance.now() - t0;
-          f.workTotal += work;
-          if (f.work.length < 4000) f.work.push(work);
-          if (work > f.workMax) f.workMax = work;
-        }
+        // Копим в pending, а закрываем кадр в tickProbe: два колбэка по 10 мс
+        // в одном кадре — это кадр за 20 мс, а не два кадра по 10.
+        if (f) f.pending += performance.now() - t0;
       }
     };
 
@@ -165,8 +162,10 @@ function makePreload() {
     //   times — интервалы между кадрами, то есть каденс браузера (справочно).
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
-      work: [], workTotal: 0, workMax: 0,
+      work: [], workTotal: 0, workMax: 0, pending: 0,
     };
+    // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
+    // раньше игровых колбэков — и закрывает работу ПРЕДЫДУЩЕГО кадра.
     const tickProbe = (ts) => {
       const f = window.__forgeFrames;
       if (!f.startedAt) f.startedAt = performance.now();
@@ -175,6 +174,12 @@ function makePreload() {
         f.count++;
         if (dt > 50) f.long++;
         if (f.times.length < 4000) f.times.push(dt);
+
+        const frameWork = f.pending;
+        f.pending = 0;
+        f.workTotal += frameWork;
+        if (f.work.length < 4000) f.work.push(frameWork);
+        if (frameWork > f.workMax) f.workMax = frameWork;
       }
       f.last = ts;
       rafReal(tickProbe);
@@ -183,7 +188,7 @@ function makePreload() {
     window.__forgeResetFrames = () => {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
-        work: [], workTotal: 0, workMax: 0,
+        work: [], workTotal: 0, workMax: 0, pending: 0,
       };
       window.__forgeDraws = 0;
     };

@@ -26,6 +26,15 @@ jobs:
       - name: Синтаксис всех модулей
         run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/tiny-game/forge/*.mjs; do node --check "$f"; done
 
+      - name: Синтаксис shell и python
+        run: |
+          bash -n blender-kit/*.sh install.sh
+          python3 -m py_compile blender-kit/*.py
+
+      - name: Юнит-тесты
+        working-directory: game-forge
+        run: npm run test:unit
+
       - name: doctor
         run: node game-forge/bin/forge.mjs doctor
 
@@ -39,6 +48,10 @@ jobs:
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000
+
+      - name: Сквозные тесты конвейера
+        working-directory: game-forge
+        run: node --test --test-timeout 300000 test/e2e-*.test.mjs
 
       - name: Навык должен влиять на исход
         run: |

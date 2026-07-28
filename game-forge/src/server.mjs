@@ -36,7 +36,15 @@ export function serve(root, { port = 0 } = {}) {
   let served = 0;
 
   const server = http.createServer((req, res) => {
-    const url = decodeURIComponent((req.url || '/').split('?')[0]);
+    // decodeURIComponent бросает на битом percent-encoding («/%E0%A4%A»);
+    // без этого блока падал весь процесс forge, а не один запрос
+    let url;
+    try {
+      url = decodeURIComponent((req.url || '/').split('?')[0]);
+    } catch {
+      res.writeHead(400).end('bad request');
+      return;
+    }
     let file = path.resolve(abs, '.' + path.posix.normalize('/' + url));
     // Не выпускаем за корень игры. Сравнение через relative, а не startsWith:
     // startsWith пропускает соседа с тем же префиксом («/games/app-secret»
