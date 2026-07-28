@@ -151,6 +151,37 @@ describe('CLI', opts, () => {
     }
   });
 
+  test('отключённая стадия не подтягивает старый красный прогон', () => {
+    // Сценарий из ревью: вчерашний sim был красным, сегодня адаптер отключён.
+    // Раньше `??` подставлял старый analysis — отчёт краснел, а код выхода
+    // считался по текущему (пустому) результату и оставался нулевым.
+    const cfgFile = path.join(GAME, 'forge.config.mjs');
+    const original = fs.readFileSync(cfgFile, 'utf8');
+    const simDir = path.join(GAME, '.forge', 'latest-sim');
+
+    // гарантируем наличие «вчерашнего» красного анализа
+    execFileSync('node', [FORGE, 'sim', GAME, '--runs', '4', '--max-ticks', '5000'], { encoding: 'utf8' });
+    const analysisFile = path.join(fs.realpathSync(simDir), 'analysis.json');
+    const analysis = JSON.parse(fs.readFileSync(analysisFile, 'utf8'));
+    analysis.verdict = 'needs-work';
+    analysis.flags = [{ kind: 'wall', level: 1, severity: 'high', detail: 'вчерашняя стена' }];
+    fs.writeFileSync(analysisFile, JSON.stringify(analysis));
+
+    // отключаем и адаптер, и сценарии: сценарии фикстуры сами требуют адаптер,
+    // и без него упали бы, замаскировав проверяемое поведение
+    fs.writeFileSync(cfgFile, original.replace(/\s*(adapter|scenarios): .*,\n/g, '\n'));
+    try {
+      const r = run(['all', GAME]);
+      assert.equal(r.code, 0, 'текущий прогон чистый — код обязан быть нулевым');
+      const reportFile = path.join(fs.realpathSync(path.join(GAME, '.forge', 'latest-report')), 'index.html');
+      const html = fs.readFileSync(reportFile, 'utf8');
+      assert.doesNotMatch(html, /вчерашняя стена/, 'старый прогон не должен попадать в свежий отчёт');
+      assert.doesNotMatch(html, /Требует правок/);
+    } finally {
+      fs.writeFileSync(cfgFile, original);
+    }
+  });
+
   test('doctor печатает окружение', () => {
     const r = run(['doctor']);
     assert.match(r.out, /Chromium/);
