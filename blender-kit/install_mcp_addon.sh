@@ -4,9 +4,11 @@
 set -euo pipefail
 
 BLENDER_APP="${BLENDER_APP:-/Applications/Blender.app/Contents/MacOS/Blender}"
-# Пин на ревизию: по умолчанию main, но это исполняемый код в твоём Blender —
-# лучше подставить конкретный коммит: ADDON_REF=<sha> ./install_mcp_addon.sh
-ADDON_REF="${ADDON_REF:-main}"
+# Аддон исполняется внутри Blender с полными правами, поэтому ревизия
+# закреплена коммитом, а содержимое сверяется с известной контрольной суммой.
+# Обновление — осознанный шаг: ADDON_REF=<sha> ADDON_SHA256=<sum> ./install_mcp_addon.sh
+ADDON_REF="${ADDON_REF:-da4e16d2069ce5154eaa2535bf995e843caf5c73}"
+EXPECTED_SHA="${ADDON_SHA256:-ca6955bb584d78e229f020a8b9d7011440adc6e94dab0ac8e01ab2794db19dc0}"
 ADDON_URL="https://raw.githubusercontent.com/ahujasid/blender-mcp/${ADDON_REF}/addon.py"
 
 [ -x "$BLENDER_APP" ] || { echo "Blender не найден: $BLENDER_APP"; exit 1; }
@@ -20,19 +22,25 @@ TMP_ADDON="$(mktemp)"
 curl -fsSL "$ADDON_URL" -o "$TMP_ADDON"
 SHA=$(shasum -a 256 "$TMP_ADDON" | awk '{print $1}')
 
-cat <<INFO
+echo "  ревизия:  $ADDON_REF"
+echo "  sha256:   $SHA"
 
-Скачан addon.py (ревизия «$ADDON_REF», $(wc -c < "$TMP_ADDON") байт)
-  sha256: $SHA
-  источник: $ADDON_URL
+if [ "$SHA" != "$EXPECTED_SHA" ]; then
+  cat <<ERR
 
-Это код, который будет исполняться внутри Blender с полными правами.
-Проверь его перед установкой:  less "$TMP_ADDON"
+✗ Контрольная сумма не совпала.
+    ожидалась: $EXPECTED_SHA
+    получена:  $SHA
 
-INFO
+Удалённый файл изменился. Проверь диф и, если изменения ожидаемы, запусти с
+явным подтверждением: ADDON_SHA256=$SHA ./install_mcp_addon.sh
+Скачанный файл оставлен для проверки: $TMP_ADDON
+ERR
+  exit 1
+fi
 
 if [ "${FORGE_ASSUME_YES:-}" != "1" ]; then
-  printf 'Установить? [y/N] '
+  printf 'Суммы совпали. Установить? [y/N] '
   read -r answer
   case "$answer" in
     y|Y|yes|Yes) ;;
@@ -43,7 +51,7 @@ fi
 mv "$TMP_ADDON" "$ADDON_DIR/blender_mcp_addon.py"
 echo "✓ установлен в $ADDON_DIR/blender_mcp_addon.py"
 
-"$BLENDER_APP" -b --python-expr "
+ENABLE_LOG=$("$BLENDER_APP" -b --python-expr "
 import bpy
 try:
     bpy.ops.preferences.addon_enable(module='blender_mcp_addon')
@@ -51,7 +59,16 @@ try:
     print('FORGE_ADDON_OK')
 except Exception as e:
     print('FORGE_ADDON_FAIL', e)
-" 2>&1 | grep -E "FORGE_ADDON_(OK|FAIL)" || true
+" 2>&1) || true
+
+echo "$ENABLE_LOG" | grep -E "FORGE_ADDON_(OK|FAIL)" || true
+
+# Без этой проверки FORGE_ADDON_FAIL уходил в /dev/null: скрипт «успешно»
+# завершался, а аддон оставался выключенным
+if ! echo "$ENABLE_LOG" | grep -q FORGE_ADDON_OK; then
+  echo "✗ Blender не включил аддон — смотри вывод выше"
+  exit 1
+fi
 
 cat <<'EOF'
 

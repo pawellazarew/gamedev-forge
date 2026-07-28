@@ -20,6 +20,9 @@ export function parseArgs(argv) {
 }
 
 export function num(v, dflt) {
+  // `--runs` без значения парсится во флаг `true`, а Number(true) === 1:
+  // без этой проверки «forge sim --runs --bot x» молча делал бы один прогон
+  if (typeof v === 'boolean' || v == null || v === '') return dflt;
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
 }

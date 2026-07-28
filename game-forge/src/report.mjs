@@ -8,7 +8,7 @@ import { ensureDir, runDir, linkLatest, color } from './util.mjs';
  * потребовалось бы 300 строк описания.
  */
 /** Худший статус побеждает: зелёный отчёт при красном probe — ложь. */
-function combineVerdict({ probe, analysis, scenarios }) {
+export function combineVerdict({ probe, analysis, scenarios }) {
   const rank = { fail: 3, 'needs-work': 3, warn: 2, watch: 2, pass: 1, ok: 1 };
   const parts = [probe?.verdict, analysis?.verdict, scenarios?.status].filter(Boolean);
   if (!parts.length) return 'ok';

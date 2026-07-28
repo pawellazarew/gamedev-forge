@@ -1,0 +1,177 @@
+import { test, describe, before } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { loadConfig, loadAdapter } from '../src/harness.mjs';
+import { probe } from '../src/probe.mjs';
+import { runScenarios } from '../src/scenario.mjs';
+import { simulate } from '../src/sim.mjs';
+import { analyze } from '../src/analyze.mjs';
+import { findChromium } from '../src/browser.mjs';
+
+const ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
+const GAME = path.join(ROOT, 'fixtures/tiny-game');
+const FORGE = path.join(ROOT, 'game-forge/bin/forge.mjs');
+
+// Без браузера сквозные тесты бессмысленны — честно пропускаем, а не «зеленим»
+const hasBrowser = !!findChromium();
+const opts = { skip: hasBrowser ? false : 'Chromium не установлен: npx playwright install chromium' };
+
+let cfg;
+before(async () => { cfg = await loadConfig(GAME); });
+
+describe('probe', opts, () => {
+  test('меряет работу кадра, ловит живой кадр и не выдумывает ошибок', async () => {
+    const { metrics } = await probe(cfg, { seconds: 3 });
+    assert.equal(metrics.errorCount, 0, 'фикстура обязана быть чистой');
+    assert.equal(metrics.verdict, 'pass');
+
+    assert.ok(metrics.frameWorkMs >= 0 && metrics.frameWorkMs < 16.7, `работа кадра ${metrics.frameWorkMs} мс`);
+    assert.ok(metrics.frameWorkMs < metrics.frameIntervalMs,
+      'работа обязана быть меньше каденса — иначе меряем не то');
+    assert.ok(metrics.mainThreadBusy >= 0 && metrics.mainThreadBusy <= 1);
+
+    const alive = metrics.checks.find((c) => c.name === 'frame-alive');
+    assert.equal(alive.status, 'pass');
+    assert.ok(metrics.canvas.distinctColors > 2, 'на кадре должно быть что-то нарисовано');
+  });
+
+  test('бюджет проверяется: заниженный лимит веса роняет вердикт', async () => {
+    const strict = { ...cfg, budgets: { ...cfg.budgets, bundleKb: 0 } };
+    const { metrics } = await probe(strict, { seconds: 2 });
+    assert.equal(metrics.verdict, 'fail');
+    assert.equal(metrics.checks.find((c) => c.name === 'bundle').status, 'fail');
+  });
+});
+
+describe('сценарии', opts, () => {
+  test('play проходит и снимает кадры', async () => {
+    const { summary, dir } = await runScenarios(cfg, { kind: 'play' });
+    assert.equal(summary.status, 'pass');
+    const sc = summary.scenarios[0];
+    assert.equal(sc.checks.filter((c) => c.status !== 'pass').length, 0);
+    assert.equal(sc.shots.length, 2);
+    for (const s of sc.shots) {
+      assert.ok(fs.existsSync(s.file), `кадр ${s.label} должен существовать`);
+      assert.ok(fs.statSync(s.file).size > 500, 'PNG не должен быть пустым');
+    }
+    assert.ok(fs.existsSync(path.join(dir, 'play.json')));
+  });
+
+  test('провалившийся expect делает статус красным', async () => {
+    // Сценарий с заведомо ложным условием: если такой прогон «зелёный»,
+    // ассерты бесполезны и play перестаёт быть гейтом
+    const file = path.join(GAME, 'forge', 'scenarios.broken.mjs');
+    fs.writeFileSync(file, `export default [{
+      name: 'broken', viewport: 'desktop', selector: '#game',
+      steps: [
+        { forge: ['start'], tick: 60 },
+        { expect: { fn: () => window.__FORGE__.state().score > 1e9, msg: 'заведомо ложное условие' } },
+      ],
+    }];`);
+    try {
+      const { summary } = await runScenarios({ ...cfg, scenariosFile: file }, { kind: 'play' });
+      assert.equal(summary.status, 'fail');
+      const failed = summary.scenarios[0].checks.filter((c) => c.status === 'fail');
+      assert.equal(failed.length, 1);
+      assert.match(failed[0].name, /ложное условие/);
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+});
+
+describe('симуляция', opts, () => {
+  test('детерминизм: один seed — один результат', async () => {
+    const a = await simulate(cfg, { runs: 3, maxTicks: 5000, seed0: 777, bots: ['veteran'] });
+    const b = await simulate(cfg, { runs: 3, maxTicks: 5000, seed0: 777, bots: ['veteran'] });
+    const strip = (rs) => rs.map((r) => ({ ticks: r.ticks, score: r.final.score, level: r.final.level }));
+    assert.deepEqual(strip(a.runs), strip(b.runs), 'без детерминизма «фикс баланса» неверифицируем');
+  });
+
+  test('разные seed дают разные прогоны', async () => {
+    const a = await simulate(cfg, { runs: 4, maxTicks: 5000, seed0: 1, bots: ['casual'] });
+    const b = await simulate(cfg, { runs: 4, maxTicks: 5000, seed0: 500, bots: ['casual'] });
+    const t = (r) => r.runs.map((x) => x.ticks).join(',');
+    assert.notEqual(t(a), t(b), 'иначе seed ни на что не влияет');
+  });
+
+  test('навык влияет: ветеран обыгрывает казуала', async () => {
+    const { dir } = await simulate(cfg, { runs: 10, maxTicks: 20000, seed0: 42 });
+    const a = analyze(dir);
+    const win = (n) => a.bots.find((b) => b.bot === n).winrate;
+    assert.ok(win('veteran') >= win('casual'), `veteran ${win('veteran')} vs casual ${win('casual')}`);
+    assert.ok(!a.flags.some((f) => f.kind === 'bot-suspect'));
+  });
+
+  test('симуляция быстрее реального времени на порядки', async () => {
+    const { meta } = await simulate(cfg, { runs: 6, maxTicks: 20000, bots: ['veteran'] });
+    assert.ok(meta.ticksPerSecond > 10000, `${meta.ticksPerSecond} тиков/с — слишком медленно, рендер не отключён?`);
+  });
+
+  test('кривая сложности строится по событиям адаптера', async () => {
+    const { dir } = await simulate(cfg, { runs: 8, maxTicks: 20000, seed0: 7 });
+    const a = analyze(dir);
+    assert.ok(a.levels.length >= 3, 'фикстура проходит несколько уровней');
+    for (const L of a.levels) {
+      assert.ok(L.attempts >= L.clears, 'попыток не может быть меньше прохождений');
+      assert.ok(L.clearRate === null || (L.clearRate >= 0 && L.clearRate <= 1));
+    }
+  });
+});
+
+describe('CLI', opts, () => {
+  const run = (args) => {
+    try {
+      return { code: 0, out: execFileSync('node', [FORGE, ...args], { encoding: 'utf8' }) };
+    } catch (e) {
+      return { code: e.status, out: (e.stdout || '') + (e.stderr || '') };
+    }
+  };
+
+  test('all на здоровой игре завершается нулём', () => {
+    const r = run(['all', GAME, '--runs', '4', '--max-ticks', '20000']);
+    assert.equal(r.code, 0, r.out.slice(-600));
+    assert.match(r.out, /прогон пройден/);
+  });
+
+  test('all возвращает ненулевой код, когда probe красный', () => {
+    // Тот самый случай: отчёт «Требует правок», а CI видел успех
+    const tmpCfg = path.join(GAME, 'forge.config.mjs');
+    const original = fs.readFileSync(tmpCfg, 'utf8');
+    fs.writeFileSync(tmpCfg, original.replace('bundleKb: 64', 'bundleKb: 1'));
+    try {
+      const r = run(['all', GAME, '--runs', '4', '--max-ticks', '20000']);
+      assert.notEqual(r.code, 0, 'красный прогон обязан валить CI');
+      assert.match(r.out, /прогон не пройден/);
+    } finally {
+      fs.writeFileSync(tmpCfg, original);
+    }
+  });
+
+  test('doctor печатает окружение', () => {
+    const r = run(['doctor']);
+    assert.match(r.out, /Chromium/);
+    assert.match(r.out, /Node/);
+  });
+
+  test('неизвестная игра — понятная ошибка, а не стектрейс', () => {
+    const r = run(['probe', '/tmp/нет-такой-игры-forge']);
+    assert.notEqual(r.code, 0);
+    assert.match(r.out, /forge\.config\.mjs/);
+  });
+});
+
+describe('адаптер фикстуры', opts, () => {
+  test('соответствует контракту ADAPTER.md', async () => {
+    const adapter = await loadAdapter(cfg);
+    assert.equal(typeof adapter.install, 'function');
+    assert.equal(adapter.tickRate, 60);
+    // install сериализуется в браузер — замыкания на модульные переменные
+    // не переживут переезд, поэтому в теле не должно быть импортов
+    const src = adapter.install.toString();
+    assert.doesNotMatch(src, /\bimport\b|\brequire\(/);
+  });
+});

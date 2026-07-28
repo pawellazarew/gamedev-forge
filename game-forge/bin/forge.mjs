@@ -169,30 +169,48 @@ function latest(c, kind) {
   return fs.existsSync(p) ? fs.realpathSync(p) : null;
 }
 
-function collectShots(c) {
-  const dir = latest(c, 'shots') || latest(c, 'play');
-  if (!dir) return [];
-  const file = path.join(dir, 'shots.json');
-  const alt = path.join(dir, 'play.json');
-  const src = fs.existsSync(file) ? file : fs.existsSync(alt) ? alt : null;
-  if (!src) return [];
-  return readJson(src).scenarios.flatMap((s) => s.shots.map((sh) => ({ ...sh, scenario: s.scenario, note: sh.note || s.note })));
+/** Сводка сценариев из последнего прогона: play важнее shots только если он свежее. */
+function latestScenarios(c) {
+  const candidates = [['play', 'play.json'], ['shots', 'shots.json']]
+    .map(([kind, file]) => {
+      const dir = latest(c, kind);
+      const f = dir && path.join(dir, file);
+      return f && fs.existsSync(f) ? { file: f, mtime: fs.statSync(f).mtimeMs } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtime - a.mtime);
+  return candidates.length ? readJson(candidates[0].file) : null;
 }
 
-function cmdReport(c) {
+function shotsFrom(summary) {
+  if (!summary) return [];
+  return summary.scenarios.flatMap((s) => s.shots.map((sh) => ({ ...sh, scenario: s.scenario, note: sh.note || s.note })));
+}
+
+/**
+ * @param {object} [fresh] результаты текущего прогона — внутри `all` берём их
+ *   напрямую. Иначе отчёт мог склеить сценарии из вчерашнего зелёного `play`
+ *   с кадрами сегодняшнего красного `shots` и спрятать актуальную поломку.
+ */
+function cmdReport(c, fresh = null) {
   const probeDir = latest(c, 'probe');
   const simDir = latest(c, 'sim');
-  const scDir = latest(c, 'play') || latest(c, 'shots');
-  const scFile = scDir && ['play.json', 'shots.json'].map((f) => path.join(scDir, f)).find((f) => fs.existsSync(f));
+  const scenarios = fresh?.scenarios ?? latestScenarios(c);
   const file = report(c, {
-    scenarios: scFile ? readJson(scFile) : null,
-    probe: probeDir && fs.existsSync(path.join(probeDir, 'probe.json')) ? readJson(path.join(probeDir, 'probe.json')) : null,
-    analysis: simDir && fs.existsSync(path.join(simDir, 'analysis.json')) ? readJson(path.join(simDir, 'analysis.json')) : null,
-    shots: collectShots(c),
+    scenarios,
+    probe: fresh?.probe
+      ?? (probeDir && fs.existsSync(path.join(probeDir, 'probe.json')) ? readJson(path.join(probeDir, 'probe.json')) : null),
+    analysis: fresh?.analysis
+      ?? (simDir && fs.existsSync(path.join(simDir, 'analysis.json')) ? readJson(path.join(simDir, 'analysis.json')) : null),
+    shots: shotsFrom(scenarios),
     stamp: stamp(),
   });
   printReport(file);
   return file;
+}
+
+function collectShots(c) {
+  return shotsFrom(latestScenarios(c));
 }
 
 /** Бриф для агента-критика: не оценка, а точный список того, что смотреть. */
@@ -228,16 +246,35 @@ async function cmdCritique(c) {
 async function cmdAll(c) {
   const s = stamp();
   args.stamp = s;
-  const scenarios = await loadScenarios(c);
+  const scenarioDefs = await loadScenarios(c);
   const adapter = c.adapterFile ? await loadAdapter(c) : null;
 
-  await cmdProbe(c);
-  if (scenarios.length) await cmdScenarios(c, 'shots');
+  const metrics = await cmdProbe(c);
+  const scenarios = scenarioDefs.length ? await cmdScenarios(c, 'shots') : null;
+
+  let analysis = null;
   if (adapter) {
     args.runs = args.runs ?? 40;
-    await cmdSim(c);
+    ({ analysis } = await cmdSim(c));
   } else {
     console.log(color.dim('\n  sim пропущен: адаптер не подключён'));
   }
-  cmdReport(c);
+
+  // Отчёт строим из результатов ЭТОГО прогона, а не из latest-*
+  cmdReport(c, { probe: metrics, scenarios, analysis });
+
+  // Красный отчёт при нулевом коде выхода — ложь для CI и для автономного
+  // агента: оба посчитают прогон успешным.
+  const failed = [
+    metrics?.verdict === 'fail' && 'probe',
+    scenarios?.status === 'fail' && 'сценарии',
+    analysis?.verdict === 'needs-work' && 'баланс',
+  ].filter(Boolean);
+
+  if (failed.length) {
+    console.error(color.bad(`\n✗ прогон не пройден: ${failed.join(', ')}`));
+    process.exitCode = 2;
+  } else {
+    console.log(color.ok('\n✓ прогон пройден'));
+  }
 }

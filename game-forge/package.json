@@ -7,7 +7,10 @@
     "forge": "./bin/forge.mjs"
   },
   "scripts": {
-    "doctor": "node bin/forge.mjs doctor"
+    "doctor": "node bin/forge.mjs doctor",
+    "test": "node --test test/*.test.mjs",
+    "test:unit": "node --test test/unit-*.test.mjs",
+    "test:e2e": "node --test test/e2e-*.test.mjs"
   },
   "dependencies": {
     "playwright-core": "^1.60.0"
