@@ -193,15 +193,20 @@ function shotsFrom(summary) {
  *   с кадрами сегодняшнего красного `shots` и спрятать актуальную поломку.
  */
 function cmdReport(c, fresh = null) {
-  const probeDir = latest(c, 'probe');
-  const simDir = latest(c, 'sim');
-  const scenarios = fresh?.scenarios ?? latestScenarios(c);
+  // Когда результаты переданы, `null` в них — это осмысленное «стадии не было»,
+  // а не «нет данных, поищи в latest-*». Иначе отключённый адаптер подтягивал
+  // вчерашний красный sim: отчёт краснел, а код выхода считался по текущему
+  // прогону и оставался нулевым.
+  const fromDisk = (kind, file) => {
+    const dir = latest(c, kind);
+    const f = dir && path.join(dir, file);
+    return f && fs.existsSync(f) ? readJson(f) : null;
+  };
+  const scenarios = fresh ? fresh.scenarios ?? null : latestScenarios(c);
   const file = report(c, {
     scenarios,
-    probe: fresh?.probe
-      ?? (probeDir && fs.existsSync(path.join(probeDir, 'probe.json')) ? readJson(path.join(probeDir, 'probe.json')) : null),
-    analysis: fresh?.analysis
-      ?? (simDir && fs.existsSync(path.join(simDir, 'analysis.json')) ? readJson(path.join(simDir, 'analysis.json')) : null),
+    probe: fresh ? fresh.probe ?? null : fromDisk('probe', 'probe.json'),
+    analysis: fresh ? fresh.analysis ?? null : fromDisk('sim', 'analysis.json'),
     shots: shotsFrom(scenarios),
     stamp: stamp(),
   });

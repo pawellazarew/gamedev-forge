@@ -70,6 +70,45 @@ describe('безопасность', () => {
     assert.doesNotMatch(await r.text(), /НЕ ДОЛЖНО УТЕЧЬ/);
   });
 
+  test('симлинк наружу не отдаёт чужой файл', async () => {
+    // Текстовая проверка пути такую ссылку пропускает: строка выглядит
+    // легально, а ведёт наружу
+    const link = path.join(root, 'leak.txt');
+    fs.symlinkSync(path.join(sibling, 'secret.txt'), link);
+    try {
+      const r = await get('/leak.txt');
+      assert.equal(r.status, 403, `симлинк наружу отдал ${r.status}`);
+      assert.doesNotMatch(await r.text(), /НЕ ДОЛЖНО УТЕЧЬ/);
+    } finally {
+      fs.unlinkSync(link);
+    }
+  });
+
+  test('симлинк на системный файл тоже закрыт', async () => {
+    const link = path.join(root, 'hosts');
+    fs.symlinkSync('/etc/hosts', link);
+    try {
+      const r = await get('/hosts');
+      assert.equal(r.status, 403);
+    } finally {
+      fs.unlinkSync(link);
+    }
+  });
+
+  test('симлинк ВНУТРИ корня остаётся рабочим', async () => {
+    // Запрещаем выход наружу, а не симлинки как таковые: сборки часто
+    // раскладывают ассеты ссылками внутри дерева
+    const link = path.join(root, 'alias.js');
+    fs.symlinkSync(path.join(root, 'main.js'), link);
+    try {
+      const r = await get('/alias.js');
+      assert.equal(r.status, 200);
+      assert.match(await r.text(), /console\.log/);
+    } finally {
+      fs.unlinkSync(link);
+    }
+  });
+
   test('битый percent-encoding даёт 400 и не роняет сервер', async () => {
     const bad = await get('/%E0%A4%A');
     assert.equal(bad.status, 400);

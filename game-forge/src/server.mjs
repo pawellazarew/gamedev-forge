@@ -32,7 +32,9 @@ const MIME = {
  * @returns {Promise<{url: string, port: number, close: () => Promise<void>, bytes: () => number}>}
  */
 export function serve(root, { port = 0 } = {}) {
-  const abs = path.resolve(root);
+  // Канонизируем корень сразу: на macOS /tmp — сам симлинк на /private/tmp,
+  // и без realpath любая проверка сравнивала бы разные написания одного пути
+  const abs = fs.realpathSync(path.resolve(root));
   let served = 0;
 
   const server = http.createServer((req, res) => {
@@ -46,14 +48,25 @@ export function serve(root, { port = 0 } = {}) {
       return;
     }
     let file = path.resolve(abs, '.' + path.posix.normalize('/' + url));
-    // Не выпускаем за корень игры. Сравнение через relative, а не startsWith:
-    // startsWith пропускает соседа с тем же префиксом («/games/app-secret»
-    // начинается с «/games/app»).
-    const rel = path.relative(abs, file);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) { res.writeHead(403).end('forbidden'); return; }
+
+    // Проверка пути в две ступени. Текстовая ловит «../», но не симлинк:
+    // ссылка внутри корня может указывать куда угодно, и по строке она
+    // выглядит совершенно легально.
+    const inside = (p) => {
+      const rel = path.relative(abs, p);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    };
+    if (!inside(file)) { res.writeHead(403).end('forbidden'); return; }
+
     try {
       if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
       if (!fs.existsSync(file)) { res.writeHead(404).end('not found'); return; }
+
+      // Вторая ступень: куда путь ведёт на самом деле
+      const real = fs.realpathSync(file);
+      if (!inside(real)) { res.writeHead(403).end('forbidden'); return; }
+      file = real;
+
       const body = fs.readFileSync(file);
       served += body.length;
       res.writeHead(200, {

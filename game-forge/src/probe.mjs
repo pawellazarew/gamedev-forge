@@ -138,6 +138,15 @@ function evaluateBudgets(m, b) {
   add('load', m.loadMs <= b.loadMs ? 'pass' : m.loadMs <= b.loadMs * 2 ? 'warn' : 'fail',
     `${m.loadMs} мс до load (бюджет ≤${b.loadMs} мс)`);
 
+  // Единственный доступный нам прокси GPU-нагрузки: frameWorkMs меряет главный
+  // поток и о цене отрисовки не знает ничего. Бюджет задаётся только там, где
+  // он осмыслен, — у 3D-игр.
+  if (b.drawCalls != null) {
+    add('draw-calls', m.drawCallsPerFrame <= b.drawCalls ? 'pass'
+      : m.drawCallsPerFrame <= b.drawCalls * 1.5 ? 'warn' : 'fail',
+      `${m.drawCallsPerFrame} draw call/кадр (бюджет ≤${b.drawCalls}) — прокси нагрузки на GPU`);
+  }
+
   if (m.canvas && !m.canvas.error) {
     const dead = m.canvas.distinctColors <= 2 || m.canvas.maxLum - m.canvas.minLum < 6;
     add('frame-alive', dead ? 'fail' : 'pass',
