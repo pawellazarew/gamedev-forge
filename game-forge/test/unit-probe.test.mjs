@@ -6,9 +6,10 @@ import { resolveViewport } from '../src/browser.mjs';
 /** Сырьё в том виде, в каком его отдаёт страница. */
 const raw = ({
   work = Array(100).fill(1), draws = Array(100).fill(5), drawsMax = 5,
-  frames = 100, gameFrames = frames, drawsTotal = 500, times = Array(100).fill(8.3), longFrames = 0,
+  frames = 100, gameFrames = frames, paintFrames = gameFrames,
+  drawsTotal = 500, times = Array(100).fill(8.3), longFrames = 0,
 } = {}) => ({
-  frames, gameFrames, longFrames, times,
+  frames, gameFrames, paintFrames, longFrames, times,
   work, workTotal: work.reduce((a, b) => a + b, 0), workMax: work.length ? Math.max(...work) : 0,
   draws, drawsMax, drawsTotal,
   elapsedMs: 1000, heapBytes: 10 * 1048576, dpr: 2, state: null,
@@ -186,6 +187,56 @@ describe('достаточность выборки', () => {
   test('probe.json без gameFrames (прогон до этой правки) читается по-старому', () => {
     const legacy = { frames: 100, workSamples: 100, frameSamples: 100, seconds: 4, frameWorkMs: 1, frameWorkP99Ms: 2, errorCount: 0, errors: [] };
     assert.equal(evaluateBudgets(legacy, {}).find((c) => c.name === 'sample').status, 'pass');
+  });
+});
+
+describe('живой цикл против живого рендера', () => {
+  const render = (m) => m.checks.find((c) => c.name === 'render');
+  /** Зомби: rAF вызывается каждый кадр и не рисует ничего. */
+  const zombie = raw({ frames: 359, gameFrames: 359, paintFrames: 0, work: Array(359).fill(0.01), times: Array(359).fill(8.3) });
+
+  test('пустой rAF не считается отрисовкой', () => {
+    // Из ревью: пустой `requestAnimationFrame(loop)` давал 143/143 кадров игры
+    // и зелёный вердикт на застывшей картинке. Кадров игры для гейта мало.
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelsChanged: false });
+
+    assert.equal(m.gameFrames, 359, 'цикл жив');
+    assert.equal(m.paintFrames, 0, 'а нарисовано ничего');
+    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'pass', 'по кадрам игры всё в порядке');
+    assert.equal(render(m).status, 'fail');
+    assert.match(render(m).detail, /рендер мёртв/);
+    assert.equal(m.verdict, 'fail');
+  });
+
+  test('меняющиеся пиксели без команд рисования — предупреждение, не приговор', () => {
+    // Воркер, WebGPU, DOM/CSS: инструментирование их не видит, но игра живёт.
+    // Красный вердикт тут был бы враньём про игру.
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelsChanged: true });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /мимо 2D\/WebGL/);
+  });
+
+  test('пиксели не сравнивали — тоже не приговор', () => {
+    const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}) });
+    assert.equal(m.pixelsChanged, null);
+    assert.equal(render(m).status, 'warn');
+  });
+
+  test('нормальная отрисовка проходит', () => {
+    const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelsChanged: true });
+    assert.equal(render(m).status, 'pass');
+    assert.match(render(m).detail, /100 кадров с отрисовкой/);
+  });
+
+  test('игра, рисующая урывками, — предупреждение', () => {
+    const m = computeMetrics(raw({ paintFrames: 3 }), { ...opts, cfg: cfg({}), pixelsChanged: true });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /почти не перерисовывается/);
+  });
+
+  test('старый probe.json без paintFrames проверку не получает', () => {
+    const legacy = { frames: 100, gameFrames: 100, workSamples: 100, frameSamples: 100, frameWorkMs: 1, frameWorkP99Ms: 2, errorCount: 0, errors: [] };
+    assert.equal(evaluateBudgets(legacy, {}).find((c) => c.name === 'render'), undefined);
   });
 });
 

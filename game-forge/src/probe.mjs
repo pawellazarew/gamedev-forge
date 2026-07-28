@@ -55,12 +55,33 @@ export async function probe(cfg, opts = {}) {
       scenePath = sc.name;
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
-      await ctx.page.evaluate(() => window.__FORGE__?.start?.({ mode: 0 })).catch(() => {});
+      //
+      // Ошибку start() НЕ глушим. По контракту адаптера start() обязателен, и
+      // упавший старт означает ровно одно: probe померит титульный экран и
+      // назовёт его игрой. Возвращаемое значение при этом намеренно
+      // выбрасываем — start(), вернувший что-нибудь несериализуемое, ронял бы
+      // evaluate на ровном месте.
+      try {
+        await ctx.page.evaluate(() => {
+          const api = window.__FORGE__;
+          if (api && typeof api.start === 'function') api.start({ mode: 0 });
+        });
+      } catch (err) {
+        const reason = `__FORGE__.start() упал: ${String(err?.message || err).slice(0, 300)}`;
+        writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario: null, headless, reason });
+        throw new Error(`${reason}. Замер отменён: probe померил бы стартовый экран вместо игры.`);
+      }
     }
 
     // Каталог заводим после подготовки сцены: у сорванного замера свой,
     // с красным вердиктом и причиной.
     const dir = runDir(cfg.dir, 'probe', stamp);
+
+    // Кадр «до» — страховка на случай, если игра рисует мимо инструментированных
+    // API (воркер, WebGPU, DOM/CSS): тогда команд рисования не видно, а пиксели
+    // всё равно меняются, и красный вердикт был бы враньём. Снимаем ДО сброса
+    // счётчиков, чтобы полсотни миллисекунд самого скриншота не попали в окно.
+    const before = await ctx.page.screenshot();
 
     await ctx.page.evaluate(() => window.__forgeResetFrames?.());
     await ctx.page.waitForTimeout(seconds * 1000);
@@ -69,7 +90,7 @@ export async function probe(cfg, opts = {}) {
       const f = window.__forgeFrames || {};
       const mem = performance.memory ? performance.memory.usedJSHeapSize : null;
       return {
-        frames: f.count || 0, gameFrames: f.gameFrames || 0,
+        frames: f.count || 0, gameFrames: f.gameFrames || 0, paintFrames: f.paintFrames || 0,
         longFrames: f.long || 0, times: (f.times || []).slice(0, 4000),
         work: (f.work || []).slice(0, 4000), workTotal: f.workTotal || 0, workMax: f.workMax || 0,
         draws: (f.draws || []).slice(0, 4000), drawsMax: f.drawsMax || 0, drawsTotal: window.__forgeDraws || 0,
@@ -97,6 +118,7 @@ export async function probe(cfg, opts = {}) {
       bundleKb: Math.round(ctx.server.bytes() / 1024),
       errors: filterNoise(ctx.errors()),
       canvas: canvasStats,
+      pixelsChanged: !before.equals(shot),
     });
 
     writeJson(path.join(dir, 'probe.json'), metrics);
@@ -110,7 +132,8 @@ export async function probe(cfg, opts = {}) {
 /** Пустые счётчики: замер не состоялся, и метрики должны говорить именно это. */
 const NO_MEASUREMENT = {
   frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0,
-  gameFrames: 0, draws: [], drawsMax: 0, drawsTotal: 0, elapsedMs: 0, heapBytes: null, state: null,
+  gameFrames: 0, paintFrames: 0, draws: [], drawsMax: 0, drawsTotal: 0,
+  elapsedMs: 0, heapBytes: null, state: null,
 };
 
 /** Артефакт сорванного замера: полноценный probe.json с красным вердиктом. */
@@ -167,7 +190,7 @@ export async function prepareScene(page, sc, cfg) {
  */
 export function computeMetrics(raw, {
   cfg, viewport, seconds, scenario = null, headless = true,
-  loadMs = 0, bundleKb = 0, errors = [], canvas = null,
+  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelsChanged = null,
 }) {
   const budgetMs = cfg.budgets?.frameMs ?? 16.7;
 
@@ -221,6 +244,10 @@ export function computeMetrics(raw, {
     // Кадры пробы и кадры игры расходятся ровно там, где это важно: мёртвый
     // цикл рендера даёт полсотни кадров пробы и ноль кадров игры.
     gameFrames: raw.gameFrames ?? null,
+    // Кадры с фактической отрисовкой: живой цикл rAF ещё не значит, что игра
+    // что-то нарисовала.
+    paintFrames: raw.paintFrames ?? null,
+    pixelsChanged,
     workSamples,
     frameSamples,
     longFrames: raw.longFrames,
@@ -293,6 +320,31 @@ export function evaluateBudgets(m, b) {
       : `${gameFrames} кадров игры из ${frames} кадров пробы за ${m.seconds ?? '?'} с`
         + (gameFrames < THIN_FRAMES ? ` — выборка тоньше ${THIN_FRAMES} кадров, числа шумят` : '')
         + (partial ? ` — замеров работы только ${workSamples}: числа описывают начало окна, а не всё` : ''));
+
+  // Живой цикл rAF — ещё не отрисовка. `requestAnimationFrame(loop)` с пустым
+  // телом даёт полный набор кадров игры на застывшей картинке, и по кадрам
+  // всё выглядит идеально. Считаем кадры, в которых игра выдавала команды
+  // рисования (2D-канвас или WebGL).
+  //
+  // Одних команд мало для приговора: игра может рисовать мимо них — из воркера,
+  // через WebGPU или вообще средствами DOM/CSS. Поэтому решает пара «команд не
+  // видно» + «ни один пиксель не изменился»; если пиксели меняются, это
+  // предупреждение о слепой зоне инструментирования, а не провал игры.
+  const paintFrames = m.paintFrames ?? null;
+  if (paintFrames != null) {
+    const changed = m.pixelsChanged !== false;   // null — «не мерили», не обвиняем
+    const renderStatus = paintFrames >= MIN_FRAMES ? 'pass' : changed ? 'warn' : 'fail';
+    add('render', renderStatus,
+      paintFrames >= MIN_FRAMES
+        ? `${paintFrames} кадров с отрисовкой из ${gameFrames} кадров игры`
+        : paintFrames > 0
+          ? `только ${paintFrames} кадров с отрисовкой из ${gameFrames} кадров игры — игра почти не перерисовывается`
+          : changed
+            ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели меняются — `
+              + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
+            : `цикл rAF крутится (${gameFrames} кадров игры), но за ${m.seconds ?? '?'} с игра не выдала `
+              + 'ни одной команды рисования и ни один пиксель не изменился — рендер мёртв');
+  }
 
   const budgetMs = b.frameMs ?? 16.7;
   // Софтверный WebGL медленнее GPU в разы, поэтому провал по бюджету здесь

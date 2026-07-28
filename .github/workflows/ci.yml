@@ -48,14 +48,16 @@ jobs:
 
       # Зелёный probe на здоровой игре ничего не доказывает, пока не показано,
       # что сломанную он валит. dead-game рисует один кадр и больше не
-      # перерисовывается: скриншот выглядит живым, кадры пробы идут, кадров
-      # игры ноль.
-      - name: probe обязан валить игру с мёртвым циклом рендера
+      # перерисовывается (кадры пробы идут, кадров игры ноль); zombie-game
+      # крутит пустой rAF — кадры игры полны, отрисовки нет.
+      - name: probe обязан валить мёртвый рендер
         run: |
-          if node game-forge/bin/forge.mjs probe fixtures/dead-game --seconds 3 --strict; then
-            echo "::error::probe пропустил игру, которая не рисует ни одного кадра"
-            exit 1
-          fi
+          for game in dead-game zombie-game; do
+            if node game-forge/bin/forge.mjs probe "fixtures/$game" --seconds 3 --strict; then
+              echo "::error::probe пропустил $game — игру, которая ничего не рисует"
+              exit 1
+            fi
+          done
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000

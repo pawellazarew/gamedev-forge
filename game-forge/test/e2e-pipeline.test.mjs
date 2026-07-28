@@ -125,6 +125,57 @@ describe('достоверность замера на живой страниц
     assert.equal(metrics.verdict, 'fail');
   });
 
+  test('пустой цикл rAF не выдаётся за живую игру', async () => {
+    // Фикстура крутит `requestAnimationFrame(loop)` с пустым телом: кадры игры
+    // идут полным потоком, картинка застыла. Ловит только проверка отрисовки.
+    const zombieCfg = await loadConfig(path.join(ROOT, 'fixtures/zombie-game'));
+    const { metrics } = await probe(zombieCfg, { seconds: 2 });
+
+    assert.ok(metrics.gameFrames >= 20, `кадров игры ${metrics.gameFrames} — цикл жив`);
+    assert.equal(metrics.paintFrames, 0, 'а команд рисования нет ни одной');
+    assert.equal(metrics.pixelsChanged, false, 'и ни один пиксель не изменился');
+    assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'pass',
+      'по кадрам игры выборка полноценная — тем и опасен зомби');
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'fail');
+    assert.equal(metrics.verdict, 'fail');
+  });
+
+  test('живая игра рисует и это видно', async () => {
+    const { metrics } = await probe(cfg, { seconds: 2 });
+    assert.ok(metrics.paintFrames >= 20, `кадров с отрисовкой ${metrics.paintFrames}`);
+    assert.equal(metrics.pixelsChanged, true);
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'pass');
+  });
+
+  test('упавший start() отменяет замер и оставляет красный след', async () => {
+    // По контракту адаптера start() обязателен. Проглоченная ошибка означала
+    // замер титульного экрана под видом игры.
+    const file = path.join(GAME, 'forge', 'adapter.broken.mjs');
+    fs.writeFileSync(file, `export default {
+      autostart: true, tickRate: 60,
+      install() {
+        window.__FORGE__ = {
+          ready: true,
+          start() { throw new Error('стартовый экран не собрался'); },
+          tick() {}, state() { return { over: false, score: 0, level: 1 }; },
+        };
+      },
+    };`);
+    try {
+      await assert.rejects(
+        () => probe({ ...cfg, adapterFile: file }, { seconds: 2 }),
+        /start\(\) упал.*стартовый экран не собрался/s,
+      );
+      const p = JSON.parse(fs.readFileSync(
+        path.join(fs.realpathSync(path.join(GAME, '.forge', 'latest-probe')), 'probe.json'), 'utf8'));
+      assert.equal(p.verdict, 'fail');
+      assert.equal(p.checks[0].name, 'scene');
+      assert.match(p.checks[0].detail, /start\(\) упал/);
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+
   test('живая игра считается по кадрам игры, а не только пробы', async () => {
     const { metrics } = await probe(cfg, { seconds: 2 });
     assert.ok(metrics.gameFrames >= 20, `кадров игры ${metrics.gameFrames}`);

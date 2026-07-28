@@ -170,6 +170,26 @@ function makePreload() {
       }
     }
 
+    // «Кадр игры» и «кадр, в котором игра рисовала» — разные вещи: пустой
+    // `requestAnimationFrame(loop)` даёт полный набор кадров игры на намертво
+    // застывшей картинке. Отличить одно от другого можно только по командам
+    // рисования, поэтому помечаем кадр, в котором канвас трогали.
+    // Флаг, а не счётчик: нужен факт, а не количество, и платить за каждый
+    // fillRect подсчётом незачем.
+    for (const proto of [window.CanvasRenderingContext2D, window.OffscreenCanvasRenderingContext2D]) {
+      if (!proto) continue;
+      for (const m of ['fillRect', 'strokeRect', 'clearRect', 'drawImage', 'fill', 'stroke',
+        'fillText', 'strokeText', 'putImageData']) {
+        const orig = proto.prototype[m];
+        if (!orig) continue;
+        proto.prototype[m] = function (...args) {
+          const f = window.__forgeFrames;
+          if (f) f.painted = 1;
+          return orig.apply(this, args);
+        };
+      }
+    }
+
     // Три разных числа, которые легко перепутать:
     //   count     — кадры САМОЙ пробы: tickProbe крутится сам по себе и считает
     //               их, даже если игра не нарисовала ни одного кадра;
@@ -178,7 +198,7 @@ function makePreload() {
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
-      gameFrames: 0, cbPending: 0,
+      gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
@@ -205,6 +225,9 @@ function makePreload() {
 
         const frameDraws = f.drawsPending;
         f.drawsPending = 0;
+        // Отрисовка — команды 2D-канваса ИЛИ draw call'ы WebGL.
+        if (f.painted || frameDraws > 0) f.paintFrames++;
+        f.painted = 0;
         if (f.draws.length < 4000) f.draws.push(frameDraws);
         if (frameDraws > f.drawsMax) f.drawsMax = frameDraws;
       }
@@ -216,7 +239,7 @@ function makePreload() {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
-        gameFrames: 0, cbPending: 0,
+        gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0,
         draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;

@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Zombie Game (фикстура)</title>
+<!--
+  Игра-зомби: цикл рендера жив, отрисовки нет. requestAnimationFrame вызывается
+  каждый кадр и не делает ничего — счётчик кадров игры полон, картинка застыла.
+  Ровно этим пустой цикл отличается от настоящего рендера, и по одним кадрам
+  игры отличить их невозможно.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0e14; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const ctx = document.getElementById('game').getContext('2d');
+  ctx.fillStyle = '#0b0e14';
+  ctx.fillRect(0, 0, 640, 400);
+  for (let i = 0; i < 40; i++) {
+    ctx.fillStyle = `hsl(${i * 9}, 70%, 55%)`;
+    ctx.fillRect(20 + (i % 10) * 60, 40 + Math.floor(i / 10) * 80, 48, 48);
+  }
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('цикл крутится, кадры не рисуются', 20, 380);
+
+  // Цикл есть, работы нет: ни одной команды рисования после первого кадра.
+  let ticks = 0;
+  (function loop() { ticks++; requestAnimationFrame(loop); })();
+</script>
