@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { serve } from './server.mjs';
-import { launch, newPage } from './browser.mjs';
+import { launch, newPage, viewport as viewportPreset } from './browser.mjs';
 
 /**
  * Конфиг игры: <gameDir>/forge.config.mjs. Всё опционально кроме root/entry —
@@ -68,6 +68,10 @@ export async function loadScenarios(cfg) {
  */
 export async function boot(cfg, opts = {}) {
   const { viewport = cfg.viewport, headless = true, shell = false, seed = 1, adapter = null } = opts;
+  // Имя вьюпорта проверяем до запуска чего бы то ни было: раньше опечатка
+  // (в том числе в поле viewport сценария) роняла newPage уже после старта
+  // сервера и браузера — и оба оставались висеть.
+  viewportPreset(viewport);
   const server = await serve(cfg.rootDir);
   // Софтверный WebGL нужен только в headless, где иначе выйдет чёрный кадр.
   // В headed-режиме он бы отобрал ровно то, ради чего headed и запускают —
@@ -131,7 +135,9 @@ function makePreload() {
         const f = window.__forgeFrames;
         // Копим в pending, а закрываем кадр в tickProbe: два колбэка по 10 мс
         // в одном кадре — это кадр за 20 мс, а не два кадра по 10.
-        if (f) f.pending += performance.now() - t0;
+        // cbPending считает сами вызовы: кадр, в котором игра ничего не считала,
+        // и кадр, в котором игра вообще не рисовала, — разные вещи.
+        if (f) { f.pending += performance.now() - t0; f.cbPending++; }
       }
     };
 
@@ -164,12 +170,15 @@ function makePreload() {
       }
     }
 
-    // Два разных числа, которые легко перепутать:
-    //   work  — сколько игра реально считала и рисовала внутри кадра (главное);
-    //   times — интервалы между кадрами, то есть каденс браузера (справочно).
+    // Три разных числа, которые легко перепутать:
+    //   count     — кадры САМОЙ пробы: tickProbe крутится сам по себе и считает
+    //               их, даже если игра не нарисовала ни одного кадра;
+    //   gameFrames — кадры, в которых выполнялся rAF-колбэк ИГРЫ (вот это жизнь);
+    //   times     — интервалы между кадрами, то есть каденс браузера (справочно).
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
+      gameFrames: 0, cbPending: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
@@ -189,6 +198,11 @@ function makePreload() {
         if (f.work.length < 4000) f.work.push(frameWork);
         if (frameWork > f.workMax) f.workMax = frameWork;
 
+        // Кадр засчитывается игре, только если её колбэк в нём выполнялся.
+        const cbs = f.cbPending;
+        f.cbPending = 0;
+        if (cbs > 0) f.gameFrames++;
+
         const frameDraws = f.drawsPending;
         f.drawsPending = 0;
         if (f.draws.length < 4000) f.draws.push(frameDraws);
@@ -202,6 +216,7 @@ function makePreload() {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
+        gameFrames: 0, cbPending: 0,
         draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;

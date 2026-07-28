@@ -1,0 +1,27 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dead Game (фикстура)</title>
+<!--
+  Игра, которая нарисовала один кадр и умерла: цикл рендера не запущен.
+  На скриншоте она выглядит живой (картинка есть, цвета есть), а кадров игры
+  ноль. Проба при этом крутит СВОЙ requestAnimationFrame и насчитывает
+  десятки кадров — на этом и ловилась зелёная проверка выборки.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0e14; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const ctx = document.getElementById('game').getContext('2d');
+  ctx.fillStyle = '#0b0e14';
+  ctx.fillRect(0, 0, 640, 400);
+  for (let i = 0; i < 40; i++) {
+    ctx.fillStyle = `hsl(${i * 9}, 70%, 55%)`;
+    ctx.fillRect(20 + (i % 10) * 60, 40 + Math.floor(i / 10) * 80, 48, 48);
+  }
+  ctx.fillStyle = '#e6edf3';
+  ctx.font = '20px sans-serif';
+  ctx.fillText('кадр нарисован один раз', 20, 380);
+  // И никакого requestAnimationFrame: цикл рендера не запускается вовсе.
+</script>

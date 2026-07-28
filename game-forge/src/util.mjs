@@ -4,13 +4,19 @@ import { fileURLToPath } from 'node:url';
 
 export const FORGE_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 
-/** Разбор argv в стиле `--key value` / `--flag`. Позиционные — в `_`. */
+/** Разбор argv в стиле `--key value`, `--key=value` / `--flag`. Позиционные — в `_`. */
 export function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
-      const key = a.slice(2);
+      const body = a.slice(2);
+      // Форма `--key=value` обязательна: без неё `--scenario=storm-peak`
+      // превращался в неизвестный флаг «scenario=storm-peak», сцена молча
+      // не готовилась, и probe мерил стартовый экран под зелёным вердиктом.
+      const eq = body.indexOf('=');
+      if (eq > 0) { out[body.slice(0, eq)] = body.slice(eq + 1); continue; }
+      const key = body;
       const next = argv[i + 1];
       if (next === undefined || next.startsWith('--')) out[key] = true;
       else { out[key] = next; i++; }

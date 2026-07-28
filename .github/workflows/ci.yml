@@ -24,7 +24,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Синтаксис всех модулей
-        run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/tiny-game/forge/*.mjs; do node --check "$f"; done
+        run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/*/forge.config.mjs fixtures/tiny-game/forge/*.mjs; do node --check "$f"; done
 
       - name: Синтаксис shell и python
         run: |
@@ -45,6 +45,17 @@ jobs:
 
       - name: probe (метрики и ошибки консоли)
         run: node game-forge/bin/forge.mjs probe fixtures/tiny-game --seconds 4 --strict
+
+      # Зелёный probe на здоровой игре ничего не доказывает, пока не показано,
+      # что сломанную он валит. dead-game рисует один кадр и больше не
+      # перерисовывается: скриншот выглядит живым, кадры пробы идут, кадров
+      # игры ноль.
+      - name: probe обязан валить игру с мёртвым циклом рендера
+        run: |
+          if node game-forge/bin/forge.mjs probe fixtures/dead-game --seconds 3 --strict; then
+            echo "::error::probe пропустил игру, которая не рисует ни одного кадра"
+            exit 1
+          fi
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000

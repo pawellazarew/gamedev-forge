@@ -61,6 +61,83 @@ describe('probe --scenario', opts, () => {
   test('несуществующая сцена — понятная ошибка со списком доступных', async () => {
     await assert.rejects(() => probe(cfg, { seconds: 1, scenario: 'нет-такой' }), /Есть: smoke, late-game/);
   });
+
+  test('вьюпорт берётся из сценария, явный флаг его перебивает', async () => {
+    // Сцена «phone» на 1280 пикселях — это замер другой сцены: раскладка,
+    // масштаб и число объектов на экране другие.
+    const file = path.join(GAME, 'forge', 'scenarios.phone.mjs');
+    fs.writeFileSync(file, `export default [{
+      name: 'phone-peak', viewport: 'phone', selector: '#game',
+      steps: [{ forge: ['start'], tick: 120 }],
+    }];`);
+    try {
+      const scoped = { ...cfg, scenariosFile: file };
+      const auto = await probe(scoped, { seconds: 1, scenario: 'phone-peak' });
+      assert.equal(auto.metrics.viewport, 'phone', 'вьюпорт сценария важнее вьюпорта конфига');
+
+      const forced = await probe(scoped, { seconds: 1, scenario: 'phone-peak', viewport: 'desktop' });
+      assert.equal(forced.metrics.viewport, 'desktop', 'явный --viewport важнее сценария');
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+
+  test('ложный expect в подготовке сцены отменяет замер', async () => {
+    // Раньше проваленный expect терялся вместе с одноразовым массивом checks,
+    // и probe спокойно мерил сцену, которая не собралась.
+    const file = path.join(GAME, 'forge', 'scenarios.badprep.mjs');
+    fs.writeFileSync(file, `export default [{
+      name: 'badprep', viewport: 'desktop', selector: '#game',
+      steps: [
+        { forge: ['start'], tick: 60 },
+        { expect: { fn: () => window.__FORGE__.state().score > 1e9, msg: 'сцена доведена до пика' } },
+      ],
+    }];`);
+    try {
+      await assert.rejects(
+        () => probe({ ...cfg, scenariosFile: file }, { seconds: 2, scenario: 'badprep' }),
+        /не подготовлена.*сцена доведена до пика/s,
+      );
+    } finally {
+      fs.unlinkSync(file);
+    }
+  });
+});
+
+describe('достоверность замера на живой странице', opts, () => {
+  test('нулевая длительность отвергается до запуска браузера', async () => {
+    await assert.rejects(() => probe(cfg, { seconds: 0 }), /положительным числом/);
+  });
+
+  test('игра с мёртвым циклом рендера не проходит, хотя кадр выглядит живым', async () => {
+    // Фикстура рисует один раз и больше не перерисовывается. Проба крутит свой
+    // rAF и насчитывает ей десятки кадров — по кадрам пробы всё «отлично».
+    const deadCfg = await loadConfig(path.join(ROOT, 'fixtures/dead-game'));
+    const { metrics } = await probe(deadCfg, { seconds: 2 });
+
+    assert.ok(metrics.frames >= 20, `кадров пробы ${metrics.frames} — они идут независимо от игры`);
+    assert.equal(metrics.gameFrames, 0, 'а игра не нарисовала ни одного');
+    assert.equal(metrics.checks.find((c) => c.name === 'frame-alive').status, 'pass',
+      'статичная картинка обманывает проверку живого кадра — ловить должна выборка');
+    assert.equal(metrics.checks.find((c) => c.name === 'frame-work').status, 'pass',
+      'нулевая работа укладывается в любой бюджет');
+    assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'fail');
+    assert.equal(metrics.verdict, 'fail');
+  });
+
+  test('живая игра считается по кадрам игры, а не только пробы', async () => {
+    const { metrics } = await probe(cfg, { seconds: 2 });
+    assert.ok(metrics.gameFrames >= 20, `кадров игры ${metrics.gameFrames}`);
+    assert.ok(metrics.gameFrames <= metrics.frames);
+    assert.match(metrics.checks.find((c) => c.name === 'sample').detail, /кадров игры/);
+  });
+
+  test('нормальный прогон набирает выборку и проверку sample', async () => {
+    const { metrics } = await probe(cfg, { seconds: 2 });
+    assert.ok(metrics.frames >= 20, `кадров ${metrics.frames} — выборка должна набраться за 2 секунды`);
+    assert.ok(metrics.workSamples > 0 && metrics.frameSamples > 0);
+    assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'pass');
+  });
 });
 
 describe('бюджет draw calls на живой странице', opts, () => {
@@ -206,6 +283,75 @@ describe('CLI', opts, () => {
       assert.doesNotMatch(html, /Требует правок/);
     } finally {
       fs.writeFileSync(cfgFile, original);
+    }
+  });
+
+  test('probe --seconds 0 падает, а не рисует зелёный гейт', () => {
+    const r = run(['probe', GAME, '--seconds', '0']);
+    assert.notEqual(r.code, 0, 'нулевой замер обязан быть ошибкой');
+    assert.match(r.out, /положительным числом/);
+    assert.doesNotMatch(r.out, /PASS/, 'ни одной зелёной проверки на несостоявшемся замере');
+  });
+
+  test('вьюпорт сценария доезжает до CLI, а --viewport его перебивает', () => {
+    // Плумбинг CLI → probe: раньше bin подставлял c.viewport, и перебивать
+    // сценарий было уже нечем. Тесты на probe() этого не ловили.
+    const file = path.join(GAME, 'forge', 'scenarios.mjs');
+    const original = fs.readFileSync(file, 'utf8');
+    fs.writeFileSync(file, original.replace('export default [', `export default [
+      { name: 'phone-peak', viewport: 'phone', selector: '#game', steps: [{ forge: ['start'], tick: 120 }] },`));
+    const viewportOf = () => JSON.parse(fs.readFileSync(
+      path.join(fs.realpathSync(path.join(GAME, '.forge', 'latest-probe')), 'probe.json'), 'utf8')).viewport;
+    try {
+      assert.equal(run(['probe', GAME, '--seconds', '1', '--scenario', 'phone-peak']).code, 0);
+      assert.equal(viewportOf(), 'phone', 'вьюпорт сценария');
+
+      assert.equal(run(['probe', GAME, '--seconds', '1', '--scenario', 'phone-peak', '--viewport', 'desktop']).code, 0);
+      assert.equal(viewportOf(), 'desktop', 'явный флаг важнее');
+
+      // Форма --key=value: раньше ключ ломался, сцена не готовилась, вердикт был зелёным
+      assert.equal(run(['probe', GAME, '--seconds', '1', '--scenario=phone-peak']).code, 0);
+      assert.equal(viewportOf(), 'phone', '--scenario=имя обязан работать так же');
+    } finally {
+      fs.writeFileSync(file, original);
+    }
+  });
+
+  test('флаг без значения — ошибка, а не тихое умолчание', () => {
+    // `forge probe game --viewport $VP` с пустой переменной мерил другой класс
+    // устройств и оставался зелёным.
+    const vp = run(['probe', GAME, '--seconds', '1', '--viewport', '--strict']);
+    assert.notEqual(vp.code, 0);
+    assert.match(vp.out, /--viewport требует значение/);
+
+    const sc = run(['probe', GAME, '--seconds', '1', '--scenario', '--strict']);
+    assert.notEqual(sc.code, 0);
+    assert.match(sc.out, /--scenario требует значение/);
+  });
+
+  test('сорванная подготовка сцены оставляет красный след, а не вчерашний зелёный', () => {
+    const file = path.join(GAME, 'forge', 'scenarios.mjs');
+    const original = fs.readFileSync(file, 'utf8');
+    const probeJson = () => JSON.parse(fs.readFileSync(
+      path.join(fs.realpathSync(path.join(GAME, '.forge', 'latest-probe')), 'probe.json'), 'utf8'));
+
+    assert.equal(run(['probe', GAME, '--seconds', '1']).code, 0);
+    assert.equal(probeJson().verdict, 'pass', 'сначала зелёный прогон');
+
+    fs.writeFileSync(file, original.replace('export default [', `export default [
+      { name: 'badprep', viewport: 'desktop', selector: '#game', steps: [
+        { forge: ['start'], tick: 60 },
+        { expect: { fn: () => window.__FORGE__.state().score > 1e9, msg: 'сцена доведена до пика' } },
+      ] },`));
+    try {
+      const r = run(['probe', GAME, '--seconds', '1', '--scenario', 'badprep']);
+      assert.notEqual(r.code, 0);
+      const p = probeJson();
+      assert.equal(p.verdict, 'fail', 'latest-probe обязан показывать сорванный замер, а не прошлый зелёный');
+      assert.equal(p.checks[0].name, 'scene');
+      assert.match(p.checks[0].detail, /сцена доведена до пика/);
+    } finally {
+      fs.writeFileSync(file, original);
     }
   });
 
