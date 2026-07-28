@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>Spike Frame</title>
+<canvas id="game" width="320" height="240"></canvas>
+<script>
+// Фикстура для gate по draw calls: почти все кадры дешёвые, но раз в секунду
+// случается пик. Среднее прячет его, пик — нет.
+var gl = document.getElementById('game').getContext('webgl');
+var buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1]), gl.STATIC_DRAW);
+var vs = gl.createShader(gl.VERTEX_SHADER);
+gl.shaderSource(vs, 'attribute vec2 p; void main(){ gl_Position = vec4(p*0.5, 0.0, 1.0); }');
+gl.compileShader(vs);
+var fs = gl.createShader(gl.FRAGMENT_SHADER);
+gl.shaderSource(fs, 'precision mediump float; void main(){ gl_FragColor = vec4(0.2, 0.7, 1.0, 1.0); }');
+gl.compileShader(fs);
+var prog = gl.createProgram();
+gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog); gl.useProgram(prog);
+var loc = gl.getAttribLocation(prog, 'p');
+gl.enableVertexAttribArray(loc);
+gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+var frame = 0;
+(function loop() {
+  frame++;
+  gl.clearColor(0.05, 0.07, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  var n = (frame % 60 === 0) ? 600 : 6;   // пик раз в секунду
+  for (var i = 0; i < n; i++) gl.drawArrays(gl.TRIANGLES, 0, 3);
+  requestAnimationFrame(loop);
+})();
+</script>

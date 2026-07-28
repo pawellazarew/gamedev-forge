@@ -81,7 +81,7 @@ function probeSection(p) {
   <div class="card"><div class="k">Ошибок в консоли</div><div class="v ${p.errorCount ? 'bad' : 'ok'}">${p.errorCount}</div></div>
   <div class="card"><div class="k">Вес загруженного</div><div class="v">${p.bundleKb} КБ</div></div>
   <div class="card"><div class="k">Загрузка</div><div class="v">${p.loadMs} мс</div></div>
-  <div class="card"><div class="k">Draw calls / кадр</div><div class="v">${p.drawCallsPerFrame}</div></div>
+  <div class="card"><div class="k">Draw calls (p99 / макс)</div><div class="v">${p.drawCallsP99 ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.drawCallsMax ?? '—'}</span></div></div>
 </div>
 <table><tbody>
 ${p.checks.map((c) => `<tr><td class="${cls(c.status)}">${c.status.toUpperCase()}</td><td><b>${esc(c.name)}</b></td><td>${esc(c.detail)}</td></tr>`).join('')}

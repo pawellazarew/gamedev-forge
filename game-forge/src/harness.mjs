@@ -147,13 +147,20 @@ function makePreload() {
 
     // Счётчик draw call'ов: для 3D это первый подозреваемый при просадке fps,
     // а получить его иначе можно только через дорогую трассировку.
+    // Считаем ПОКАДРОВО: среднее прячет пик, а тормозит игра именно на пике —
+    // один кадр с 600 вызовами при среднем 7 остаётся незамеченным.
     window.__forgeDraws = 0;
     for (const proto of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
       if (!proto) continue;
       for (const m of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced']) {
         const orig = proto.prototype[m];
         if (!orig) continue;
-        proto.prototype[m] = function (...args) { window.__forgeDraws++; return orig.apply(this, args); };
+        proto.prototype[m] = function (...args) {
+          window.__forgeDraws++;
+          const f = window.__forgeFrames;
+          if (f) f.drawsPending++;
+          return orig.apply(this, args);
+        };
       }
     }
 
@@ -163,6 +170,7 @@ function makePreload() {
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
+      draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
     // раньше игровых колбэков — и закрывает работу ПРЕДЫДУЩЕГО кадра.
@@ -180,6 +188,11 @@ function makePreload() {
         f.workTotal += frameWork;
         if (f.work.length < 4000) f.work.push(frameWork);
         if (frameWork > f.workMax) f.workMax = frameWork;
+
+        const frameDraws = f.drawsPending;
+        f.drawsPending = 0;
+        if (f.draws.length < 4000) f.draws.push(frameDraws);
+        if (frameDraws > f.drawsMax) f.drawsMax = frameDraws;
       }
       f.last = ts;
       rafReal(tickProbe);
@@ -189,6 +202,7 @@ function makePreload() {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
+        draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;
     };

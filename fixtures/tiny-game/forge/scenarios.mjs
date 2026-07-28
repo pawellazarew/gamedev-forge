@@ -11,4 +11,13 @@ export default [
       { expect: { fn: () => typeof window.__FORGE__.state().level === 'number', msg: 'состояние читается' } },
     ],
   },
+  {
+    name: 'late-game',
+    viewport: 'desktop',
+    selector: '#game',
+    note: 'Поздняя стадия: probe --scenario late-game меряет её, а не стартовый экран',
+    steps: [
+      { forge: ['start'], tick: 1200, bot: 'veteran' },
+    ],
+  },
 ];
