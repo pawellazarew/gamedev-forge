@@ -170,21 +170,28 @@ function makePreload() {
     // застывшей картинке.
     //
     // Кадр помечается нарисованным при ДВУХ условиях: команда пришла изнутри
-    // колбэка игры и адресована поверхности, которую видит игрок. Иначе за
-    // мёртвый игровой канвас ручались бы закадровый бэкбуфер, спрятанный
-    // `display:none` помощник или счётчик кадров, который рисует не игра.
-    const composited = new WeakMap();
-    const visible = (cv) => {
-      if (!cv || !cv.isConnected) return false;   // OffscreenCanvas сюда же: isConnected нет
-      let v = composited.get(cv);
-      // clientWidth дёргает лейаут, поэтому спрашиваем один раз на канвас
-      // за всё время: игры не прячут и не показывают игровой канвас на ходу.
-      if (v === undefined) { v = cv.clientWidth > 0 && cv.clientHeight > 0; composited.set(cv, v); }
-      return v;
+    // колбэка игры и адресована ТОМУ САМОМУ канвасу, который probe снимает
+    // скриншотом. Иначе за мёртвый игровой канвас ручаются закадровый
+    // бэкбуфер, соседний канвас с индикатором или помощник в стороне.
+    //
+    // Раньше здесь была «видимость» через clientWidth с кэшем — она врала в
+    // обе стороны: канвас, показанный после загрузки, навсегда оставался
+    // «невидимым», а `opacity: 0` считался видимым. Тождество с целью
+    // скриншота однозначно, не требует лейаута и не расходится с тем, по
+    // чему потом сравниваются пиксели.
+    const gameCanvas = () => {
+      let cv = window.__forgeCanvas;
+      // Перезапрашиваем, только если канвас исчез из документа: игра могла
+      // пересоздать его. Это чтение свойства, лейаут не дёргается.
+      if (!cv || !cv.isConnected) {
+        cv = document.querySelector(window.__forgeCanvasSel || 'canvas');
+        window.__forgeCanvas = cv;
+      }
+      return cv;
     };
     // Флаг, а не счётчик: нужен факт, а не количество. Отметив кадр, дальше
     // выходим сразу — за каждый fillRect платить проверками незачем.
-    const markPaint = (f, cv) => { if (f && f.inCb && !f.painted && visible(cv)) f.painted = 1; };
+    const markPaint = (f, cv) => { if (f && f.inCb && !f.painted && cv && cv === gameCanvas()) f.painted = 1; };
 
     window.__forgeDraws = 0;
     for (const proto of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
@@ -224,7 +231,7 @@ function makePreload() {
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
-      gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0,
+      gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0, lastPaintAt: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
@@ -254,7 +261,9 @@ function makePreload() {
         // Отрисовку помечают оба хука — и 2D, и WebGL, — поэтому здесь один
         // флаг. Сбрасывать его обязательно: иначе одна отрисовка помечает
         // нарисованными все последующие кадры.
-        if (f.painted) f.paintFrames++;
+        // lastPaintAt нужен, чтобы отличить «рисует редко» от «рисовал и
+        // перестал»: доля кадров у этих двух случаев одинаковая.
+        if (f.painted) { f.paintFrames++; f.lastPaintAt = f.count; }
         f.painted = 0;
         if (f.draws.length < 4000) f.draws.push(frameDraws);
         if (frameDraws > f.drawsMax) f.drawsMax = frameDraws;
@@ -267,7 +276,7 @@ function makePreload() {
       window.__forgeFrames = {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
-        gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0,
+        gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0, lastPaintAt: 0,
         draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;

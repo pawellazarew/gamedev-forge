@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Dying Render (фикстура)</title>
+<!--
+  Рендер живёт первые кадры и умирает: дальше цикл крутится вхолостую.
+  Доля перерисованных кадров такая же, как у игры, которая рисует редко, —
+  различает их только хвост окна замера.
+-->
+<style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const ctx = document.getElementById('game').getContext('2d');
+  let t = 0;
+  // Умираем по часам, а не по счётчику кадров: окно замера открывается
+  // примерно через полсекунды после загрузки, и рендер должен застать его
+  // начало живым, а конец — мёртвым. Иначе проверялась бы не та ветка.
+  (function loop() {
+    t++;
+    if (performance.now() < 2000) {
+      ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
+      ctx.fillStyle = '#f0883e'; ctx.fillRect((t * 4) % 560, 160, 80, 80);
+    }
+    requestAnimationFrame(loop);
+  })();
+</script>

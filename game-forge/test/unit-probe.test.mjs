@@ -6,10 +6,10 @@ import { resolveViewport } from '../src/browser.mjs';
 /** Сырьё в том виде, в каком его отдаёт страница. */
 const raw = ({
   work = Array(100).fill(1), draws = Array(100).fill(5), drawsMax = 5,
-  frames = 100, gameFrames = frames, paintFrames = gameFrames,
+  frames = 100, gameFrames = frames, paintFrames = gameFrames, lastPaintAt = frames,
   drawsTotal = 500, times = Array(100).fill(8.3), longFrames = 0,
 } = {}) => ({
-  frames, gameFrames, paintFrames, longFrames, times,
+  frames, gameFrames, paintFrames, lastPaintAt, longFrames, times,
   work, workTotal: work.reduce((a, b) => a + b, 0), workMax: work.length ? Math.max(...work) : 0,
   draws, drawsMax, drawsTotal,
   elapsedMs: 1000, heapBytes: 10 * 1048576, dpr: 2, state: null,
@@ -85,7 +85,8 @@ describe('evaluateBudgets', () => {
     frameWorkMs: 1, frameWorkP99Ms: 2, frameWorkMaxMs: 3, mainThreadBusy: 0.1, headroom: 16,
     errorCount: 0, errors: [], bundleKb: 10, loadMs: 100,
     drawCallsP99: 10, drawCallsMax: 12, drawCallsMedian: 9, longFrames: 0, frames: 100,
-    gameFrames: 100, workSamples: 100, frameSamples: 100, longFrameRatio: 0, seconds: 4,
+    gameFrames: 100, paintFrames: 100, lastPaintAt: 100, workSamples: 100, frameSamples: 100,
+    longFrameRatio: 0, pixelChange: 0.02, seconds: 4,
   };
 
   test('софтверный WebGL понижает провал по кадру до предупреждения', () => {
@@ -118,8 +119,11 @@ describe('достаточность выборки', () => {
 
     assert.equal(m.frames, 0);
     assert.equal(m.frameWorkMs, 0, 'нулевая работа сама по себе выглядит идеально');
-    assert.equal(m.checks.find((c) => c.name === 'frame-work').status, 'pass',
-      'именно поэтому остальные проверки на пустой выборке зеленеют');
+    // Раньше она печаталась как PASS: ноль миллисекунд укладывается в любой
+    // бюджет, и под красным sample стоял частокол зелёных проверок.
+    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined,
+      'чисел кадра без кадров не существует — молчание честнее');
+    assert.equal(m.checks.find((c) => c.name === 'draw-calls'), undefined);
     assert.equal(sample(m).status, 'fail');
     assert.equal(m.verdict, 'fail', 'вердикт обязан краснеть на пустом замере');
   });
@@ -146,6 +150,31 @@ describe('достаточность выборки', () => {
     assert.equal(sample(m).status, 'fail');
     assert.match(sample(m).detail, /инструментирование кадра сломано/);
     assert.doesNotMatch(sample(m).detail, /--seconds/, 'совет поднять --seconds тут лечит не то');
+    assert.equal(m.verdict, 'fail');
+  });
+
+  test('честный on-demand без rAF — не поломка, а «стоимость кадра не измерена»', () => {
+    // Настоящий Wordle рисует в обработчике ввода и rAF не заводит вовсе:
+    // кадров игры ноль по определению. renderMode этого не спасал — sample
+    // требовал пять кадров независимо от режима, и здоровая игра краснела.
+    const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
+    const idle = raw({ work: Array(120).fill(0), frames: 120, gameFrames: 0, paintFrames: 0, lastPaintAt: 0 });
+    const m = computeMetrics(idle, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
+
+    assert.equal(sample(m).status, 'warn');
+    assert.match(sample(m).detail, /рисует по событию/);
+    assert.notEqual(m.verdict, 'fail', 'здоровая пошаговая игра не должна валить CI');
+    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'стоимости кадра тут нет');
+  });
+
+  test('но нулевое окно замера остаётся провалом и для on-demand', () => {
+    // «Игра рисует по событию» не оправдывает `--seconds 0`: это уже не про
+    // игру, а про то, что замера не было.
+    const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
+    const m = computeMetrics(raw({ work: [], draws: [], frames: 0, gameFrames: 0, paintFrames: 0, times: [] }), {
+      ...opts, seconds: 0.001, cfg: onDemand,
+    });
+    assert.equal(sample(m).status, 'fail');
     assert.equal(m.verdict, 'fail');
   });
 
@@ -247,14 +276,39 @@ describe('живой цикл против живого рендера', () => {
     assert.match(render(m).detail, /уходит в никуда/);
   });
 
-  test('доля, а не абсолютное число: 5 кадров из 720 — не живой рендер', () => {
-    // Порог MIN_FRAMES здесь не годится: чем длиннее --seconds, тем слабее
-    // становился бы гейт. Рендер, умерший на второй секунде, — обычная авария.
-    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5 }), {
+  test('рендер, умерший на второй секунде, валит прогон, а не предупреждает', () => {
+    // Порог MIN_FRAMES тут не годится вдвойне: чем длиннее --seconds, тем
+    // слабее был бы гейт, а `warn` не валит --strict — то есть ложнозелёный
+    // просто переезжал бы в другую форму.
+    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0,
     });
-    assert.notEqual(render(m).status, 'pass');
-    assert.match(render(m).detail, /5 из 720/);
+    assert.equal(render(m).status, 'fail');
+    assert.match(render(m).detail, /рендер остановился/);
+    assert.equal(m.verdict, 'fail');
+  });
+
+  test('«рисует редко» и «рисовал и умер» различаются хвостом окна', () => {
+    // Доля кадров у них одинаковая — 5 из 720. Отличие только в том, когда
+    // была последняя отрисовка.
+    const dying = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
+      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
+    });
+    const rare = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 715 }), {
+      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
+    });
+    assert.equal(render(dying).status, 'fail');
+    assert.equal(render(rare).status, 'warn');
+    assert.match(render(rare).detail, /почти не перерисовывается/);
+  });
+
+  test('высокая доля не спасает, если отрисовка встала под конец', () => {
+    // 62% кадров с отрисовкой — долевой гейт такое пропускал бы.
+    const m = computeMetrics(raw({ frames: 360, gameFrames: 360, paintFrames: 221, lastPaintAt: 221 }), {
+      ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0.02,
+    });
+    assert.equal(render(m).status, 'fail');
+    assert.match(render(m).detail, /остановился/);
   });
 
   test('половина кадров с отрисовкой — уже жизнь', () => {
@@ -350,7 +404,8 @@ describe('счётчик draw calls не сработал', () => {
     const m = computeMetrics(raw({ work: [], draws: [], drawsMax: 0, frames: 0, gameFrames: 0, times: [] }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
-    assert.doesNotMatch(m.checks.find((c) => c.name === 'draw-calls').detail, /не сработал/);
+    assert.equal(m.checks.find((c) => c.name === 'draw-calls'), undefined,
+      'без кадров нет ни нагрузки на GPU, ни повода про неё говорить');
   });
 });
 

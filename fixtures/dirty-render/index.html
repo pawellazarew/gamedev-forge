@@ -2,15 +2,16 @@
 <meta charset="utf-8">
 <title>Dirty Render (фикстура)</title>
 <!--
-  Здоровая игра, которая рисует ТОЛЬКО по событию: пошаговая, Wordle-подобная.
-  Цикл жив, за окно замера без ввода не рисуется ни один кадр — и это норма,
-  а не поломка. Форма, на которой гейт «рендер мёртв» даёт ложный красный.
+  Здоровая игра, которая рисует ТОЛЬКО по событию и НЕ заводит
+  requestAnimationFrame вовсе — так устроен обычный Wordle.
+  Кадров игры ноль по определению: мерить стоимость кадра у неё нечего,
+  но игра работает. Форма, на которой гейт даёт ложный красный.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>
 <script>
   const ctx = document.getElementById('game').getContext('2d');
-  let letters = ['С', 'Л', 'О', 'В', 'О'], dirty = true;
+  let letters = ['С', 'Л', 'О', 'В', 'О'];
 
   function render() {
     ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
@@ -19,7 +20,8 @@
       ctx.fillStyle = '#fff'; ctx.font = '40px sans-serif'; ctx.fillText(ch, 85 + i * 100, 205);
     });
   }
-  (function loop() { if (dirty) { render(); dirty = false; } requestAnimationFrame(loop); })();
-  addEventListener('keydown', () => { letters.push('?'); dirty = true; });
-  addEventListener('pointerdown', () => { dirty = true; });
+  render();                                   // первый и единственный кадр
+  addEventListener('keydown', (e) => { letters.push(e.key); render(); });
+  addEventListener('pointerdown', render);
+  // Никакого requestAnimationFrame: перерисовка только по вводу.
 </script>

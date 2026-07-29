@@ -112,6 +112,13 @@ export async function probe(cfg, opts = {}) {
     //
     // Снимаем КАНВАС, а не страницу: счётчик кадров в DOM рядом с игрой — это
     // «пиксели меняются» при намертво застывшей игре.
+    // Считать отрисовку и сравнивать пиксели надо по ОДНОМУ И ТОМУ ЖЕ канвасу,
+    // иначе команды соседнего канваса ручаются за застывший игровой.
+    await ctx.page.evaluate((sel) => {
+      window.__forgeCanvasSel = sel;
+      window.__forgeCanvas = document.querySelector(sel || 'canvas');
+    }, sc?.selector || null);
+
     const before = await shootCanvas(ctx.page, sc?.selector);
 
     await ctx.page.evaluate(() => window.__forgeResetFrames?.());
@@ -122,6 +129,7 @@ export async function probe(cfg, opts = {}) {
       const mem = performance.memory ? performance.memory.usedJSHeapSize : null;
       return {
         frames: f.count || 0, gameFrames: f.gameFrames || 0, paintFrames: f.paintFrames || 0,
+        lastPaintAt: f.lastPaintAt || 0,
         longFrames: f.long || 0, times: (f.times || []).slice(0, 4000),
         work: (f.work || []).slice(0, 4000), workTotal: f.workTotal || 0, workMax: f.workMax || 0,
         draws: (f.draws || []).slice(0, 4000), drawsMax: f.drawsMax || 0, drawsTotal: window.__forgeDraws || 0,
@@ -309,6 +317,9 @@ export function computeMetrics(raw, {
     // Кадры с фактической отрисовкой: живой цикл rAF ещё не значит, что игра
     // что-то нарисовала.
     paintFrames: raw.paintFrames ?? null,
+    // На каком кадре пробы игра рисовала в последний раз: «рисует редко» и
+    // «рисовал и умер» дают одинаковую долю кадров и различаются только этим.
+    lastPaintAt: raw.lastPaintAt ?? null,
     // Доля изменившихся пикселей канваса между началом и концом окна;
     // null — сравнить не удалось, и это «не знаем», а не «застыло».
     pixelChange,
@@ -376,15 +387,25 @@ export function evaluateBudgets(m, b) {
   const frames = m.frames || 0;
   const gameFrames = m.gameFrames ?? frames;   // старые probe.json без поля читаем по-старому
   const workSamples = m.workSamples ?? 0;
+  const onDemand = m.renderMode === 'on-demand';
   const partial = workSamples > 0 && workSamples < gameFrames;
-  const enough = gameFrames >= MIN_FRAMES && workSamples > 0;
+  const measured = gameFrames >= MIN_FRAMES && workSamples > 0;
+  // Игра, рисующая по событию, может честно не нарисовать НИ ОДНОГО кадра и
+  // не завести rAF вовсе — настоящий Wordle так и устроен. Стоимость кадра у
+  // неё не измерена, и это единственное, что тут можно сказать честно.
+  // Красный вердикт означал бы «сломана», а она работает.
+  const emptyWindow = frames < MIN_FRAMES;
   add('sample',
-    !enough ? 'fail' : (gameFrames < THIN_FRAMES || partial) ? 'warn' : 'pass',
-    !enough
-      ? sampleFailure(frames, gameFrames, workSamples, m.seconds)
-      : `${gameFrames} кадров игры из ${frames} кадров пробы за ${m.seconds ?? '?'} с`
+    measured ? ((gameFrames < THIN_FRAMES || partial) ? 'warn' : 'pass')
+      : (onDemand && !emptyWindow) ? 'warn' : 'fail',
+    measured
+      ? `${gameFrames} кадров игры из ${frames} кадров пробы за ${m.seconds ?? '?'} с`
         + (gameFrames < THIN_FRAMES ? ` — выборка тоньше ${THIN_FRAMES} кадров, числа шумят` : '')
-        + (partial ? ` — замеров работы только ${workSamples}: числа описывают начало окна, а не всё` : ''));
+        + (partial ? ` — замеров работы только ${workSamples}: числа описывают начало окна, а не всё` : '')
+      : (onDemand && !emptyWindow)
+        ? `кадров игры ${gameFrames} за ${m.seconds ?? '?'} с — стоимость кадра не измерена. `
+          + 'renderMode: on-demand, игра рисует по событию: без ввода ей нечего перерисовывать'
+        : sampleFailure(frames, gameFrames, workSamples, m.seconds));
 
   // Живой цикл rAF — ещё не отрисовка. `requestAnimationFrame(loop)` с пустым
   // телом даёт полный набор кадров игры на застывшей картинке, и по кадрам
@@ -396,65 +417,82 @@ export function evaluateBudgets(m, b) {
   // видно» + «ни один пиксель не изменился»; если пиксели меняются, это
   // предупреждение о слепой зоне инструментирования, а не провал игры.
   const paintFrames = m.paintFrames ?? null;
-  // При нуле кадров игры говорить о её отрисовке нечего — там уже красный
-  // sample, и «цикл крутится» было бы прямой ложью.
+  // При нуле кадров игры говорить о её отрисовке нечего — там уже высказался
+  // sample, а «цикл крутится» было бы прямой ложью.
   if (paintFrames != null && gameFrames > 0) {
     const share = paintFrames / gameFrames;
     // Доля, а не абсолютное число: пять перерисованных кадров из семисот —
     // это умерший на второй секунде рендер, а не живая игра.
     const enoughPaint = paintFrames >= MIN_FRAMES && share >= MIN_PAINT_SHARE;
     const frozen = m.pixelChange != null && m.pixelChange < PIXEL_CHANGE_EPS;
-    const onDemand = m.renderMode === 'on-demand';
     const pct = `${Math.round(share * 100)}%`;
+
+    // «Рисует редко» и «рисовал и перестал» дают одинаковую долю кадров.
+    // Различает их только хвост окна: игра, которая перерисовалась пять раз
+    // в начале и умерла, — авария, а не редкая перерисовка.
+    const tail = Math.max(MIN_FRAMES, Math.round(frames * 0.25));
+    const gap = paintFrames > 0 && m.lastPaintAt != null ? frames - m.lastPaintAt : null;
+    const stopped = gap != null && gap > tail;
 
     // «Рисует каждый кадр, а картинка не меняется» — это потерянный blit,
     // рендер в никуда или застрявшая сцена. Не провал (WebGL-игра честно
     // перерисовывает одинаковые кадры), но и не молчание.
-    const status = enoughPaint ? (frozen ? 'warn' : 'pass')
-      : paintFrames > 0 ? 'warn'
-        : !frozen ? 'warn'
-          : onDemand ? 'warn' : 'fail';
+    const status = paintFrames === 0 ? (!frozen ? 'warn' : onDemand ? 'warn' : 'fail')
+      : stopped ? (onDemand ? 'warn' : 'fail')
+        : !enoughPaint ? 'warn'
+          : frozen ? 'warn' : 'pass';
 
     add('render', status,
-      enoughPaint
-        ? `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
-          + (frozen ? ' — но ни один пиксель канваса не изменился: рисунок уходит в никуда (потерянный blit, закадровый буфер, застывшая сцена)' : '')
-        : paintFrames > 0
-          ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
-          : !frozen
-            ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели канваса меняются — `
-              + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
-            : `за ${m.seconds ?? '?'} с игра не выдала ни одной команды рисования и ни один пиксель канваса `
-              + `не изменился (${gameFrames} кадров игры вхолостую) — рендер мёртв`
-              + (onDemand ? '. renderMode: on-demand — для игры, которая рисует по событию, это норма' : ''));
+      paintFrames === 0
+        ? (!frozen
+          ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели канваса меняются — `
+            + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
+          : `за ${m.seconds ?? '?'} с игра не выдала ни одной команды рисования и ни один пиксель канваса `
+            + `не изменился (${gameFrames} кадров игры вхолостую) — рендер мёртв`
+            + (onDemand ? '. renderMode: on-demand — для игры, которая рисует по событию, это норма' : ''))
+        : stopped
+          ? `рендер остановился: последняя отрисовка за ${gap} кадров до конца окна `
+            + `(всего ${paintFrames} из ${gameFrames} кадров игры, ${pct})`
+            + (onDemand ? '. renderMode: on-demand — игра рисует по событию' : '')
+          : !enoughPaint
+            ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
+            : `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
+              + (frozen ? ' — но ни один пиксель канваса не изменился: рисунок уходит в никуда (потерянный blit, закадровый буфер, застывшая сцена)' : ''));
   }
 
+  // Числа кадра существуют, только если кадры были. Без замера ноль
+  // миллисекунд работы и ноль draw call'ов «укладываются» в любой бюджет и
+  // рисуют частокол зелёных проверок под красным sample. Молчание честнее.
+  // Вес, время загрузки, ошибки и «живой кадр» от кадров не зависят и
+  // считаются всегда.
   const budgetMs = b.frameMs ?? 16.7;
-  // Софтверный WebGL медленнее GPU в разы, поэтому провал по бюджету здесь
-  // не приговор игре — понижаем до предупреждения и говорим почему.
-  const costStatus = m.frameWorkMs <= budgetMs ? 'pass' : m.frameWorkMs <= budgetMs * 1.5 ? 'warn' : 'fail';
-  add('frame-work', m.softwareGl && costStatus === 'fail' ? 'warn' : costStatus,
-    `${m.frameWorkMs} мс работы в кадре (бюджет ≤${budgetMs} мс) — запас ×${m.headroom}, ` +
-    // Именно «внутри rAF», а не «главный поток»: работа в setTimeout, в
-    // обработчиках событий и в парсинге сюда не попадает. Обещать больше,
-    // чем мерим, — врать в ту самую сторону, где всё зелено.
-    `внутри rAF занято ${Math.round(m.mainThreadBusy * 100)}% времени` +
-    (m.softwareGl ? ' · софтверный WebGL, сравнивать только с прошлыми прогонами' : ''));
+  if (measured) {
+    // Софтверный WebGL медленнее GPU в разы, поэтому провал по бюджету здесь
+    // не приговор игре — понижаем до предупреждения и говорим почему.
+    const costStatus = m.frameWorkMs <= budgetMs ? 'pass' : m.frameWorkMs <= budgetMs * 1.5 ? 'warn' : 'fail';
+    add('frame-work', m.softwareGl && costStatus === 'fail' ? 'warn' : costStatus,
+      `${m.frameWorkMs} мс работы в кадре (бюджет ≤${budgetMs} мс) — запас ×${m.headroom}, ` +
+      // Именно «внутри rAF», а не «главный поток»: работа в setTimeout, в
+      // обработчиках событий и в парсинге сюда не попадает. Обещать больше,
+      // чем мерим, — врать в ту самую сторону, где всё зелено.
+      `внутри rAF занято ${Math.round(m.mainThreadBusy * 100)}% времени` +
+      (m.softwareGl ? ' · софтверный WebGL, сравнивать только с прошлыми прогонами' : ''));
 
-  // Длинные кадры — единственный сигнал, который ловит работу ВНЕ rAF:
-  // блокирующий setInterval не попадает ни в frameWorkMs, ни в mainThreadBusy,
-  // но растягивает интервал между кадрами. На каденс (кадр/с) гейт вешать
-  // нельзя — в headless он упирается в потолок браузера (30 кадр/с на обеих
-  // фикстурах) и мерил бы харнесс, а не игру. Доля длинных кадров от этого
-  // потолка не зависит: 33 мс — это не 50 мс.
-  const ratio = m.longFrameRatio ?? 0;
-  const spikeStatus = m.frameWorkP99Ms <= budgetMs * 3 ? 'pass' : m.frameWorkP99Ms <= budgetMs * 6 ? 'warn' : 'fail';
-  const stallStatus = ratio <= 0.02 ? 'pass' : ratio <= 0.2 ? 'warn' : 'fail';
-  const spikes = worst(spikeStatus, stallStatus);
-  add('frame-spikes', m.softwareGl && spikes === 'fail' ? 'warn' : spikes,
-    `p99 работы ${m.frameWorkP99Ms} мс, максимум ${m.frameWorkMaxMs} мс, ` +
-    `кадров дольше 50 мс: ${m.longFrames}/${m.frames} (${Math.round(ratio * 100)}%)` +
-    (stallStatus !== 'pass' ? ' — игра встаёт: работа вне rAF или тяжёлый кадр' : ''));
+    // Длинные кадры — единственный сигнал, который ловит работу ВНЕ rAF:
+    // блокирующий setInterval не попадает ни в frameWorkMs, ни в mainThreadBusy,
+    // но растягивает интервал между кадрами. На каденс (кадр/с) гейт вешать
+    // нельзя — в headless он упирается в потолок браузера (30 кадр/с на обеих
+    // фикстурах) и мерил бы харнесс, а не игру. Доля длинных кадров от этого
+    // потолка не зависит: 33 мс — это не 50 мс.
+    const ratio = m.longFrameRatio ?? 0;
+    const spikeStatus = m.frameWorkP99Ms <= budgetMs * 3 ? 'pass' : m.frameWorkP99Ms <= budgetMs * 6 ? 'warn' : 'fail';
+    const stallStatus = ratio <= 0.02 ? 'pass' : ratio <= 0.2 ? 'warn' : 'fail';
+    const spikes = worst(spikeStatus, stallStatus);
+    add('frame-spikes', m.softwareGl && spikes === 'fail' ? 'warn' : spikes,
+      `p99 работы ${m.frameWorkP99Ms} мс, максимум ${m.frameWorkMaxMs} мс, ` +
+      `кадров дольше 50 мс: ${m.longFrames}/${m.frames} (${Math.round(ratio * 100)}%)` +
+      (stallStatus !== 'pass' ? ' — игра встаёт: работа вне rAF или тяжёлый кадр' : ''));
+  }
 
   add('errors', m.errorCount <= (b.errors ?? 0) ? 'pass' : m.errorCount <= (b.errors ?? 0) + 3 ? 'warn' : 'fail',
     m.errorCount ? m.errors.slice(0, 3).map((e) => `${e.kind}: ${e.text}`).join(' | ') : 'чисто');
@@ -477,7 +515,7 @@ export function evaluateBudgets(m, b) {
   // ненадёжен: единственный тяжёлый кадр среди ста — это ровно 1% выборки,
   // и перцентиль его теряет, хотя игрок этот фриз увидит. Для draw call'ов
   // выброс — не шум измерения, а настоящая работа GPU.
-  if (b.drawCalls != null) {
+  if (measured && b.drawCalls != null) {
     const peak = m.drawCallsMax;
     // Ноль вызовов при живом рендере — это не «уложились в бюджет», а
     // «счётчик не сработал»: бюджет, который невозможно провалить, бесполезен.

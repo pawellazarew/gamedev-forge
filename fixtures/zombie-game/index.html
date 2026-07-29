@@ -10,10 +10,16 @@
 <style>
   html, body { margin: 0; height: 100%; background: #0b0e14; }
   canvas { display: block; margin: 0 auto; }
+  #hud { position: fixed; right: 8px; top: 8px; }
 </style>
 <canvas id="game" width="640" height="400"></canvas>
+<!-- Соседний канвас-индикатор, который честно рисуется каждый кадр.
+     Ручаться за игровой канвас он не имеет права: считать отрисовку надо
+     по той же поверхности, по которой потом сравниваются пиксели. -->
+<canvas id="hud" width="120" height="24"></canvas>
 <script>
   const ctx = document.getElementById('game').getContext('2d');
+  const hud = document.getElementById('hud').getContext('2d');
   ctx.fillStyle = '#0b0e14';
   ctx.fillRect(0, 0, 640, 400);
   for (let i = 0; i < 40; i++) {
@@ -24,7 +30,14 @@
   ctx.font = '20px sans-serif';
   ctx.fillText('цикл крутится, кадры не рисуются', 20, 380);
 
-  // Цикл есть, работы нет: ни одной команды рисования после первого кадра.
+  // Цикл есть, работы нет: по игровому канвасу — ни одной команды рисования
+  // после первого кадра. Индикатор при этом бодро тикает каждый кадр.
   let ticks = 0;
-  (function loop() { ticks++; requestAnimationFrame(loop); })();
+  (function loop() {
+    ticks++;
+    hud.fillStyle = '#0b0e14'; hud.fillRect(0, 0, 120, 24);
+    hud.fillStyle = '#8b949e'; hud.font = '12px sans-serif';
+    hud.fillText('кадр ' + ticks, 4, 16);
+    requestAnimationFrame(loop);
+  })();
 </script>

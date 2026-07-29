@@ -119,8 +119,8 @@ describe('достоверность замера на живой страниц
     assert.equal(metrics.gameFrames, 0, 'а игра не нарисовала ни одного');
     assert.equal(metrics.checks.find((c) => c.name === 'frame-alive').status, 'pass',
       'статичная картинка обманывает проверку живого кадра — ловить должна выборка');
-    assert.equal(metrics.checks.find((c) => c.name === 'frame-work').status, 'pass',
-      'нулевая работа укладывается в любой бюджет');
+    assert.equal(metrics.checks.find((c) => c.name === 'frame-work'), undefined,
+      'чисел кадра без кадров не существует: раньше нулевая работа печаталась как PASS');
     assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'fail');
     assert.equal(metrics.verdict, 'fail');
   });
@@ -132,8 +132,9 @@ describe('достоверность замера на живой страниц
     const { metrics } = await probe(zombieCfg, { seconds: 2 });
 
     assert.ok(metrics.gameFrames >= 20, `кадров игры ${metrics.gameFrames} — цикл жив`);
-    assert.equal(metrics.paintFrames, 0, 'а команд рисования нет ни одной');
-    assert.equal(metrics.pixelChange, 0, 'и ни один пиксель канваса не изменился');
+    assert.equal(metrics.paintFrames, 0,
+      'по игровому канвасу — ни одной команды, хотя соседний канвас-индикатор рисуется каждый кадр');
+    assert.equal(metrics.pixelChange, 0, 'и ни один пиксель игрового канваса не изменился');
     assert.equal(metrics.checks.find((c) => c.name === 'sample').status, 'pass',
       'по кадрам игры выборка полноценная — тем и опасен зомби');
     assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'fail');
@@ -160,19 +161,49 @@ describe('достоверность замера на живой страниц
     assert.equal(metrics.verdict, 'fail');
   });
 
-  test('игра, рисующая по событию, не объявляется мёртвой', async () => {
-    // Форма Wordle: живой цикл, отрисовка только по вводу. Без opt-out гейт
-    // красит здоровую игру красным — поэтому у неё renderMode: 'on-demand'.
+  test('настоящий on-demand без rAF не объявляется мёртвым', async () => {
+    // Форма Wordle: рисует в обработчике ввода, requestAnimationFrame не
+    // заводит вовсе. Кадров игры ноль по определению — и это не поломка.
+    // Прошлая версия фикстуры крутила пустой rAF и прятала эту дыру.
     const dirtyCfg = await loadConfig(path.join(ROOT, 'fixtures/dirty-render'));
     const onDemand = await probe(dirtyCfg, { seconds: 2 });
+
     assert.equal(onDemand.metrics.renderMode, 'on-demand');
-    assert.equal(onDemand.metrics.checks.find((c) => c.name === 'render').status, 'warn');
-    assert.notEqual(onDemand.metrics.verdict, 'fail', 'здоровая игра не должна валить CI');
+    assert.equal(onDemand.metrics.gameFrames, 0, 'rAF не вызывался ни разу');
+    assert.equal(onDemand.metrics.checks.find((c) => c.name === 'sample').status, 'warn');
+    assert.notEqual(onDemand.metrics.verdict, 'fail', 'здоровая пошаговая игра не должна валить CI');
 
     // Та же игра без объявленного режима — красная: молчать о застывшем
     // рендере нельзя, пока игра не сказала, что рисует по событию.
     const strict = await probe({ ...dirtyCfg, renderMode: 'continuous' }, { seconds: 2 });
-    assert.equal(strict.metrics.checks.find((c) => c.name === 'render').status, 'fail');
+    assert.equal(strict.metrics.checks.find((c) => c.name === 'sample').status, 'fail');
+    assert.equal(strict.metrics.verdict, 'fail');
+  });
+
+  test('рендер, умерший посреди окна, валит прогон', async () => {
+    // Отрисовка идёт первые полторы секунды и встаёт. Доля кадров при этом
+    // высокая — ловит только хвост окна.
+    const dyingCfg = await loadConfig(path.join(ROOT, 'fixtures/dying-render'));
+    const { metrics } = await probe(dyingCfg, { seconds: 3 });
+
+    assert.ok(metrics.paintFrames > 0, 'сначала игра рисовала');
+    assert.ok(metrics.lastPaintAt < metrics.frames * 0.75,
+      `последняя отрисовка на кадре ${metrics.lastPaintAt} из ${metrics.frames}`);
+    const render = metrics.checks.find((c) => c.name === 'render');
+    assert.equal(render.status, 'fail');
+    assert.match(render.detail, /остановился/);
+    assert.equal(metrics.verdict, 'fail');
+  });
+
+  test('канвас, показанный после загрузки, не объявляется нерисующим', async () => {
+    // Кэш «видимости» по clientWidth запоминал первый ответ навсегда: игра с
+    // заставкой получала 0 кадров с отрисовкой и красный вердикт.
+    const lateCfg = await loadConfig(path.join(ROOT, 'fixtures/late-canvas'));
+    const { metrics } = await probe(lateCfg, { seconds: 2 });
+
+    assert.ok(metrics.paintFrames >= 20, `кадров с отрисовкой ${metrics.paintFrames}`);
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'pass');
+    assert.equal(metrics.verdict, 'pass');
   });
 
   test('редкая отрисовка видна как редкая — флаг кадра не залипает', async () => {

@@ -79,6 +79,16 @@ jobs:
           check_red dead-game sample
           check_red zombie-game render
           check_red ghost-backbuffer render
+          check_red dying-render render
+
+      # Обратная сторона: здоровая игра необычной формы обязана проходить.
+      # Ложный красный блокирует работу так же надёжно, как ложный зелёный её
+      # пропускает. late-canvas показывает канвас после заставки, dirty-render
+      # рисует только по вводу и не заводит rAF вовсе.
+      - name: probe не должен валить здоровые игры
+        run: |
+          node game-forge/bin/forge.mjs probe fixtures/late-canvas --seconds 3 --strict
+          node game-forge/bin/forge.mjs probe fixtures/dirty-render --seconds 3 --strict
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000
