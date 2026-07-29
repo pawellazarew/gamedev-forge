@@ -191,8 +191,46 @@ describe('достоверность замера на живой страниц
       `последняя отрисовка на кадре ${metrics.lastPaintAt} из ${metrics.frames}`);
     const render = metrics.checks.find((c) => c.name === 'render');
     assert.equal(render.status, 'fail');
-    assert.match(render.detail, /остановился/);
+    assert.match(render.detail, /отрисовка встала/);
+    assert.ok(metrics.paintFrames / metrics.gameFrames >= 0.5,
+      `доля ${metrics.paintFrames}/${metrics.gameFrames} — фикстура обязана рисовать полноценно до смерти`);
     assert.equal(metrics.verdict, 'fail');
+  });
+
+  test('экран, доигравший анимацию и замерший, не объявляется мёртвым', async () => {
+    // Титульный экран, экран паузы, победы — любой из них перестаёт рисовать
+    // и ждёт ввода. Отличить это от смерти рендера без синтетического ввода
+    // нечем, поэтому предупреждение, а не провал: красный тут блокирует
+    // здоровую игру.
+    const introCfg = await loadConfig(path.join(ROOT, 'fixtures/settling-intro'));
+    const { metrics } = await probe(introCfg, { seconds: 3 });
+
+    assert.ok(metrics.paintFrames > 0, 'заставка рисовалась');
+    assert.ok(metrics.paintFrames < metrics.gameFrames, 'а потом перестала');
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'warn');
+    assert.notEqual(metrics.verdict, 'fail');
+  });
+
+  test('индикатор, объявленный раньше игрового канваса, не забирает замер', async () => {
+    // `document.querySelector('canvas')` брал первый в DOM — им мог оказаться
+    // прелоадер, фон или полоска счёта, и здоровая игра краснела.
+    const hudCfg = await loadConfig(path.join(ROOT, 'fixtures/hud-first'));
+    const { metrics } = await probe(hudCfg, { seconds: 2 });
+
+    assert.ok(metrics.paintFrames >= 20, `кадров с отрисовкой ${metrics.paintFrames}`);
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'pass');
+    assert.equal(metrics.verdict, 'pass');
+  });
+
+  test('отрисовка из таймера, а не из кадра игры, за игру не считается', async () => {
+    // Пустой цикл rAF плюс рисующий setInterval: пиксели меняются, команды
+    // идут — но не из кадра игры, и ручаться за живой цикл они не могут.
+    const outsideCfg = await loadConfig(path.join(ROOT, 'fixtures/outside-loop'));
+    const { metrics } = await probe(outsideCfg, { seconds: 2 });
+
+    assert.equal(metrics.paintFrames, 0, 'ни одной команды изнутри кадра игры');
+    assert.ok(metrics.pixelChange > 0, 'при этом картинка меняется');
+    assert.equal(metrics.checks.find((c) => c.name === 'render').status, 'warn');
   });
 
   test('канвас, показанный после загрузки, не объявляется нерисующим', async () => {

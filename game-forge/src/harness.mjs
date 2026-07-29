@@ -18,6 +18,10 @@ const DEFAULTS = {
   // 'on-demand'  — рисует только по событию (пошаговые, Wordle-подобные).
   // Во втором случае «за 3 секунды ничего не нарисовано» — норма, а не поломка.
   renderMode: 'continuous',
+  // Какой канвас считать игровым, если их на странице несколько. Пусто —
+  // берётся самый большой видимый: игровой почти всегда крупнее индикаторов
+  // и прелоадеров, а первый в DOM — это как повезёт.
+  canvasSelector: null,
   adapter: null,
   scenarios: null,
   references: 'forge/references',
@@ -35,6 +39,11 @@ export async function loadConfig(gameDir) {
   }
   const mod = await import(pathToFileURL(file).href + `?t=${Date.now()}`);
   const cfg = { ...DEFAULTS, ...mod.default };
+  // Опечатка в renderMode тихо возвращала бы игру под гейт «рендер мёртв»,
+  // хотя автор от него отписался.
+  if (!['continuous', 'on-demand'].includes(cfg.renderMode)) {
+    throw new Error(`renderMode: "${cfg.renderMode}" — допустимы только 'continuous' и 'on-demand'`);
+  }
   cfg.budgets = { ...DEFAULTS.budgets, ...(mod.default.budgets || {}) };
   cfg.dir = dir;
   cfg.rootDir = path.resolve(dir, cfg.root);
@@ -139,14 +148,21 @@ function makePreload() {
       // засчитывалась бы игре, и рисующая менюшка ручалась бы за мёртвый
       // игровой цикл.
       if (f) f.inCb++;
+      const leave = () => { if (f && f.inCb > 0) f.inCb--; };
+      let async = false;
       try {
-        cb(ts);
+        const out = cb(ts);
+        // `requestAnimationFrame(async loop)` заканчивается на первом await, а
+        // рисует после него. Опустив флаг сразу, мы объявили бы такую игру
+        // нерисующей. Держим кадр открытым до оседания промиса.
+        if (out && typeof out.then === 'function') { async = true; out.then(leave, leave); }
       } finally {
         // Копим в pending, а закрываем кадр в tickProbe: два колбэка по 10 мс
         // в одном кадре — это кадр за 20 мс, а не два кадра по 10.
         // cbPending считает сами вызовы: кадр, в котором игра ничего не считала,
         // и кадр, в котором игра вообще не рисовала, — разные вещи.
-        if (f) { f.pending += performance.now() - t0; f.cbPending++; f.inCb--; }
+        if (f) { f.pending += performance.now() - t0; f.cbPending++; }
+        if (!async) leave();
       }
     };
 
@@ -191,7 +207,13 @@ function makePreload() {
     };
     // Флаг, а не счётчик: нужен факт, а не количество. Отметив кадр, дальше
     // выходим сразу — за каждый fillRect платить проверками незачем.
-    const markPaint = (f, cv) => { if (f && f.inCb && !f.painted && cv && cv === gameCanvas()) f.painted = 1; };
+    const markPaint = (f, cv) => {
+      if (!f || !f.inCb || !cv || f.painted) return;
+      if (cv === gameCanvas()) f.painted = 1;
+      // Игра рисует, но не туда, куда смотрит probe. Само по себе это не
+      // приговор — это подсказка «укажи canvasSelector».
+      else f.paintedOther = 1;
+    };
 
     window.__forgeDraws = 0;
     for (const proto of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
@@ -232,6 +254,7 @@ function makePreload() {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
       gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0, lastPaintAt: 0,
+        otherPaintFrames: 0, paintedOther: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
     // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
@@ -264,7 +287,9 @@ function makePreload() {
         // lastPaintAt нужен, чтобы отличить «рисует редко» от «рисовал и
         // перестал»: доля кадров у этих двух случаев одинаковая.
         if (f.painted) { f.paintFrames++; f.lastPaintAt = f.count; }
+        if (f.paintedOther) f.otherPaintFrames++;
         f.painted = 0;
+        f.paintedOther = 0;
         if (f.draws.length < 4000) f.draws.push(frameDraws);
         if (frameDraws > f.drawsMax) f.drawsMax = frameDraws;
       }
@@ -277,6 +302,7 @@ function makePreload() {
         count: 0, long: 0, times: [], last: 0, startedAt: performance.now(),
         work: [], workTotal: 0, workMax: 0, pending: 0,
         gameFrames: 0, cbPending: 0, paintFrames: 0, painted: 0, inCb: 0, lastPaintAt: 0,
+        otherPaintFrames: 0, paintedOther: 0,
         draws: [], drawsPending: 0, drawsMax: 0,
       };
       window.__forgeDraws = 0;

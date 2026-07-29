@@ -167,6 +167,17 @@ describe('достаточность выборки', () => {
     assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'стоимости кадра тут нет');
   });
 
+  test('on-demand не милует оборвавшийся цикл: пара кадров — это поломка', () => {
+    // Помилование ровно на один случай — цикла не было вовсе. Один-четыре
+    // кадра означают, что цикл был и умер, а renderMode тут ни при чём.
+    const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
+    const m = computeMetrics(raw({ work: Array(200).fill(0.1), frames: 200, gameFrames: 3, paintFrames: 3, lastPaintAt: 3 }), {
+      ...opts, seconds: 3, cfg: onDemand, pixelChange: 0,
+    });
+    assert.equal(sample(m).status, 'fail');
+    assert.equal(m.verdict, 'fail');
+  });
+
   test('но нулевое окно замера остаётся провалом и для on-demand', () => {
     // «Игра рисует по событию» не оправдывает `--seconds 0`: это уже не про
     // игру, а про то, что замера не было.
@@ -267,48 +278,56 @@ describe('живой цикл против живого рендера', () => {
     assert.match(render(m).detail, /100 из 100 кадров игры/);
   });
 
-  test('рисует каждый кадр, а пиксели не двигаются — рисунок уходит в никуда', () => {
-    // Потерянный blit: сцена рисуется в закадровый буфер и не переносится
-    // на экран. Не провал (WebGL честно перерисовывает одинаковые кадры),
-    // но и не молчание.
+  test('рисует каждый кадр, а пиксели не двигаются — пометка, но не жёлтый', () => {
+    // Так выглядит и «game over», и пауза, и спокойная сцена: игра честно
+    // перерисовывает одну и ту же картинку. Жёлтый тут кричал бы волками на
+    // каждом экране окончания — замерено на здоровой tiny-game.
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelChange: 0 });
-    assert.equal(render(m).status, 'warn');
-    assert.match(render(m).detail, /уходит в никуда/);
+    assert.equal(render(m).status, 'pass');
+    assert.match(render(m).detail, /пиксели канваса не изменились/);
   });
 
-  test('рендер, умерший на второй секунде, валит прогон, а не предупреждает', () => {
-    // Порог MIN_FRAMES тут не годится вдвойне: чем длиннее --seconds, тем
-    // слабее был бы гейт, а `warn` не валит --strict — то есть ложнозелёный
-    // просто переезжал бы в другую форму.
-    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
-      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0,
+  test('игра рисовала полноценно и встала — провал', () => {
+    // 61% кадров с отрисовкой: долевой гейт такое пропускал бы, потому что
+    // доля выше порога. Ловит только хвост окна.
+    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 440, lastPaintAt: 440 }), {
+      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
     assert.equal(render(m).status, 'fail');
-    assert.match(render(m).detail, /рендер остановился/);
+    assert.match(render(m).detail, /отрисовка встала/);
     assert.equal(m.verdict, 'fail');
   });
 
-  test('«рисует редко» и «рисовал и умер» различаются хвостом окна', () => {
-    // Доля кадров у них одинаковая — 5 из 720. Отличие только в том, когда
-    // была последняя отрисовка.
-    const dying = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
+  test('«рисует редко» и «рисовал и встал» различаются хвостом окна', () => {
+    // Доля кадров одинаковая — 5 из 720. Отличие только в том, когда была
+    // последняя отрисовка.
+    const stopped = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
     const rare = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 715 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
-    assert.equal(render(dying).status, 'fail');
-    assert.equal(render(rare).status, 'warn');
-    assert.match(render(rare).detail, /почти не перерисовывается/);
+    assert.match(render(stopped).detail, /встала/);
+    assert.match(render(rare).detail, /по чему|перерисовывается/);
+  });
+
+  test('игра, едва рисовавшая и вставшая, — предупреждение, а не провал', () => {
+    // Пять кадров и тишина — это и умерший рендер, и заставка, которая
+    // доиграла анимацию и ждёт ввода. Без синтетического ввода различить их
+    // нечем, а красный на титульном экране блокирует здоровую игру.
+    const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
+      ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0,
+    });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /доиграл анимацию и ждёт ввода/);
   });
 
   test('высокая доля не спасает, если отрисовка встала под конец', () => {
-    // 62% кадров с отрисовкой — долевой гейт такое пропускал бы.
     const m = computeMetrics(raw({ frames: 360, gameFrames: 360, paintFrames: 221, lastPaintAt: 221 }), {
       ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0.02,
     });
     assert.equal(render(m).status, 'fail');
-    assert.match(render(m).detail, /остановился/);
+    assert.match(render(m).detail, /встала/);
   });
 
   test('половина кадров с отрисовкой — уже жизнь', () => {
@@ -317,9 +336,20 @@ describe('живой цикл против живого рендера', () => {
   });
 
   test('игра, рисующая урывками, — предупреждение', () => {
-    const m = computeMetrics(raw({ paintFrames: 3 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
+    // Доля низкая, но кадров с отрисовкой достаточно, чтобы о ней судить.
+    const m = computeMetrics(raw({ frames: 360, gameFrames: 360, paintFrames: 30, lastPaintAt: 355 }), {
+      ...opts, cfg: cfg({}), pixelChange: 0.02,
+    });
     assert.equal(render(m).status, 'warn');
     assert.match(render(m).detail, /почти не перерисовывается/);
+  });
+
+  test('пара кадров отрисовки — «судить не по чему», а не «рисует урывками»', () => {
+    // Разные вещи: у одной есть цифра, у другой нет выборки. Раньше обе
+    // печатались одним текстом про долю, противореча собственным числам.
+    const m = computeMetrics(raw({ paintFrames: 3, lastPaintAt: 98 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
+    assert.equal(render(m).status, 'warn');
+    assert.match(render(m).detail, /не по чему/);
   });
 
   test('без кадров игры проверка молчит, а не выдумывает крутящийся цикл', () => {
@@ -350,7 +380,7 @@ describe('живой цикл против живого рендера', () => {
 });
 
 describe('игра, которая встаёт', () => {
-  const spikes = (m) => m.checks.find((c) => c.name === 'frame-spikes');
+  const spikes = (m) => m.checks.find((c) => c.name === 'stalls');
 
   test('длинные кадры валят проверку, даже когда работа внутри rAF копеечная', () => {
     // Repro из ревью: тяжёлый setInterval блокирует поток, работа ВНУТРИ rAF
@@ -361,6 +391,8 @@ describe('игра, которая встаёт', () => {
     assert.equal(m.frameWorkMs, 0.03, 'внутри rAF действительно пусто');
     assert.equal(m.longFrameRatio, 1);
     assert.equal(spikes(m).status, 'fail');
+    assert.equal(m.checks.find((c) => c.name === 'frame-spikes').status, 'pass',
+      'работа внутри кадра тут ни при чём — про неё отдельная проверка');
     assert.match(spikes(m).detail, /игра встаёт/);
     assert.equal(m.verdict, 'fail');
   });
@@ -380,6 +412,18 @@ describe('игра, которая встаёт', () => {
     const m = computeMetrics(stall, { ...opts, cfg: { name: 'T', renderer: 'webgl', budgets: {} }, headless: true });
     assert.equal(m.softwareGl, true);
     assert.equal(spikes(m).status, 'warn');
+  });
+
+  test('подвисания видны и у игры без единого кадра — они считаются по кадрам пробы', () => {
+    // Иначе единственный детектор работы ВНЕ rAF выключался бы ровно для тех
+    // игр, которые всю работу там и делают.
+    const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
+    const stalling = raw({ work: Array(60).fill(0), frames: 60, gameFrames: 0, paintFrames: 0, longFrames: 40, times: Array(60).fill(300) });
+    const m = computeMetrics(stalling, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
+
+    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'стоимости кадра нет');
+    assert.equal(spikes(m).status, 'fail', 'а подвисания есть, и молчать о них нельзя');
+    assert.equal(m.verdict, 'fail');
   });
 
   test('доля занятости названа честно: это время внутри rAF, а не весь поток', () => {

@@ -65,30 +65,40 @@ jobs:
               echo "::error::probe на $1 вышел с кодом $code вместо 2 — гейт не сработал или вовсе не запустился"
               exit 1
             fi
+            # Сверяем и текст: без него фикстура могла бы краснеть по другой
+            # причине, чем задумано, и никто бы этого не заметил.
             node -e '
               const fs = require("fs");
-              const p = JSON.parse(fs.readFileSync(`fixtures/${process.argv[1]}/.forge/latest-probe/probe.json`, "utf8"));
-              const want = process.argv[2];
+              const [game, want, phrase] = process.argv.slice(1);
+              const p = JSON.parse(fs.readFileSync(`fixtures/${game}/.forge/latest-probe/probe.json`, "utf8"));
               const c = p.checks.find((c) => c.name === want);
               if (p.verdict !== "fail" || c?.status !== "fail") {
-                console.error(`::error::${process.argv[1]}: ожидали красную проверку "${want}", получили verdict=${p.verdict} ${want}=${c?.status}`);
+                console.error(`::error::${game}: ожидали красную проверку "${want}", получили verdict=${p.verdict} ${want}=${c?.status}`);
                 process.exit(1);
               }
-            ' "$1" "$2"
+              if (phrase && !c.detail.includes(phrase)) {
+                console.error(`::error::${game}: проверка "${want}" красная не по той причине — ждали «${phrase}», получили «${c.detail}»`);
+                process.exit(1);
+              }
+            ' "$1" "$2" "$3"
           }
-          check_red dead-game sample
-          check_red zombie-game render
-          check_red ghost-backbuffer render
-          check_red dying-render render
+          check_red dead-game        sample 'не нарисовала ни одного кадра'
+          check_red zombie-game      render 'рендер мёртв'
+          check_red ghost-backbuffer render 'рендер мёртв'
+          check_red dying-render     render 'отрисовка встала'
 
       # Обратная сторона: здоровая игра необычной формы обязана проходить.
       # Ложный красный блокирует работу так же надёжно, как ложный зелёный её
-      # пропускает. late-canvas показывает канвас после заставки, dirty-render
-      # рисует только по вводу и не заводит rAF вовсе.
+      # пропускает, и за время работы над этим гейтом ловился дважды.
+      #   late-canvas    — канвас появляется после заставки
+      #   dirty-render   — рисует только по вводу, rAF не заводит вовсе
+      #   settling-intro — доиграл анимацию и ждёт ввода (титул, пауза, победа)
+      #   hud-first      — индикатор объявлен раньше игрового канваса
       - name: probe не должен валить здоровые игры
         run: |
-          node game-forge/bin/forge.mjs probe fixtures/late-canvas --seconds 3 --strict
-          node game-forge/bin/forge.mjs probe fixtures/dirty-render --seconds 3 --strict
+          for game in late-canvas dirty-render settling-intro hud-first; do
+            node game-forge/bin/forge.mjs probe "fixtures/$game" --seconds 3 --strict
+          done
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000

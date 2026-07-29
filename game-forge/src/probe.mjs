@@ -112,14 +112,16 @@ export async function probe(cfg, opts = {}) {
     //
     // Снимаем КАНВАС, а не страницу: счётчик кадров в DOM рядом с игрой — это
     // «пиксели меняются» при намертво застывшей игре.
-    // Считать отрисовку и сравнивать пиксели надо по ОДНОМУ И ТОМУ ЖЕ канвасу,
-    // иначе команды соседнего канваса ручаются за застывший игровой.
-    await ctx.page.evaluate((sel) => {
-      window.__forgeCanvasSel = sel;
-      window.__forgeCanvas = document.querySelector(sel || 'canvas');
-    }, sc?.selector || null);
+    // Считать отрисовку и сравнивать пиксели надо по ОДНОМУ И ТОМУ ЖЕ канвасу.
+    // Разрешаем его один раз здесь и отдаём странице САМ ЭЛЕМЕНТ: два
+    // независимых `querySelector` расходятся на любой странице с двумя
+    // канвасами, а Playwright вдобавок пробивает shadow DOM, чего
+    // `document.querySelector` внутри страницы не делает.
+    const selector = cfg.canvasSelector || sc?.selector || null;
+    const canvasEl = await resolveCanvas(ctx.page, selector);
+    if (canvasEl) await canvasEl.evaluate((node) => { window.__forgeCanvas = node; });
 
-    const before = await shootCanvas(ctx.page, sc?.selector);
+    const before = await shoot(canvasEl, ctx.page);
 
     await ctx.page.evaluate(() => window.__forgeResetFrames?.());
     await ctx.page.waitForTimeout(seconds * 1000);
@@ -129,7 +131,7 @@ export async function probe(cfg, opts = {}) {
       const mem = performance.memory ? performance.memory.usedJSHeapSize : null;
       return {
         frames: f.count || 0, gameFrames: f.gameFrames || 0, paintFrames: f.paintFrames || 0,
-        lastPaintAt: f.lastPaintAt || 0,
+        lastPaintAt: f.lastPaintAt || 0, otherPaintFrames: f.otherPaintFrames || 0,
         longFrames: f.long || 0, times: (f.times || []).slice(0, 4000),
         work: (f.work || []).slice(0, 4000), workTotal: f.workTotal || 0, workMax: f.workMax || 0,
         draws: (f.draws || []).slice(0, 4000), drawsMax: f.drawsMax || 0, drawsTotal: window.__forgeDraws || 0,
@@ -155,8 +157,11 @@ export async function probe(cfg, opts = {}) {
     // не должен выдавать застывшую игру за живую.
     let pixelChange = null;
     try {
-      const after = await shootCanvas(ctx.page, sc?.selector);
+      const after = await shoot(canvasEl, ctx.page);
       pixelChange = +pixelDiffRatio(before, after).toFixed(4);
+      // «Живой ли кадр» тоже про игровой канвас, а не про страницу: игра с
+      // чёрным канвасом проходила на цветах окружающей вёрстки.
+      canvasStats = frameStats(after);
     } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
 
     const metrics = computeMetrics(raw, {
@@ -188,7 +193,7 @@ export async function probe(cfg, opts = {}) {
 // артефакт сорванного замера утверждал бы про рендер то, чего никто не видел.
 const NO_MEASUREMENT = {
   frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0,
-  gameFrames: 0, paintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0,
+  gameFrames: 0, paintFrames: null, otherPaintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0,
   elapsedMs: 0, heapBytes: null, state: null,
 };
 
@@ -216,10 +221,34 @@ function writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario, headless, re
   }
 }
 
-/** Снимок игрового канваса; если его нет — страницы целиком. */
-async function shootCanvas(page, selector) {
-  const el = await page.$(selector || 'canvas');
-  return (el || page).screenshot();
+/**
+ * Игровой канвас: явный селектор, иначе самый большой видимый.
+ * Первый в DOM не годится — полоска индикатора или прелоадер, объявленные
+ * раньше игрового канваса, забирали бы на себя весь замер отрисовки.
+ */
+async function resolveCanvas(page, selector) {
+  const els = await page.$$(selector || 'canvas');
+  if (els.length <= 1) return els[0] || null;
+  let best = null, bestArea = -1;
+  for (const el of els) {
+    const area = await el.evaluate((e) => e.clientWidth * e.clientHeight).catch(() => 0);
+    if (area > bestArea) { bestArea = area; best = el; }
+  }
+  return best;
+}
+
+/**
+ * Снимок канваса; если его нет или он спрятан — страницы целиком.
+ * Без таймаута скриншот спрятанного канваса ждёт видимости полминуты и
+ * роняет прогон по чужой причине.
+ */
+async function shoot(el, page) {
+  if (el) {
+    try {
+      return await el.screenshot({ timeout: 2000 });
+    } catch { /* спрятан, пересоздан или отвалился — снимем страницу */ }
+  }
+  return page.screenshot();
 }
 
 async function findScenario(cfg, name) {
@@ -320,6 +349,9 @@ export function computeMetrics(raw, {
     // На каком кадре пробы игра рисовала в последний раз: «рисует редко» и
     // «рисовал и умер» дают одинаковую долю кадров и различаются только этим.
     lastPaintAt: raw.lastPaintAt ?? null,
+    // Кадры, в которых игра рисовала на ДРУГОМ канвасе: это не приговор, а
+    // подсказка «probe смотрит не на тот канвас».
+    otherPaintFrames: raw.otherPaintFrames ?? null,
     // Доля изменившихся пикселей канваса между началом и концом окна;
     // null — сравнить не удалось, и это «не знаем», а не «застыло».
     pixelChange,
@@ -395,15 +427,18 @@ export function evaluateBudgets(m, b) {
   // неё не измерена, и это единственное, что тут можно сказать честно.
   // Красный вердикт означал бы «сломана», а она работает.
   const emptyWindow = frames < MIN_FRAMES;
+  // Помилование ровно на один случай: цикла нет вовсе. Один-четыре кадра игры
+  // означают, что цикл был и оборвался, — а это поломка при любом renderMode.
+  const pardon = onDemand && !emptyWindow && gameFrames === 0;
   add('sample',
     measured ? ((gameFrames < THIN_FRAMES || partial) ? 'warn' : 'pass')
-      : (onDemand && !emptyWindow) ? 'warn' : 'fail',
+      : pardon ? 'warn' : 'fail',
     measured
       ? `${gameFrames} кадров игры из ${frames} кадров пробы за ${m.seconds ?? '?'} с`
         + (gameFrames < THIN_FRAMES ? ` — выборка тоньше ${THIN_FRAMES} кадров, числа шумят` : '')
         + (partial ? ` — замеров работы только ${workSamples}: числа описывают начало окна, а не всё` : '')
-      : (onDemand && !emptyWindow)
-        ? `кадров игры ${gameFrames} за ${m.seconds ?? '?'} с — стоимость кадра не измерена. `
+      : pardon
+        ? `цикл рендера не запускался за ${m.seconds ?? '?'} с — стоимость кадра не измерена. `
           + 'renderMode: on-demand, игра рисует по событию: без ввода ей нечего перерисовывать'
         : sampleFailure(frames, gameFrames, workSamples, m.seconds));
 
@@ -437,10 +472,23 @@ export function evaluateBudgets(m, b) {
     // «Рисует каждый кадр, а картинка не меняется» — это потерянный blit,
     // рендер в никуда или застрявшая сцена. Не провал (WebGL-игра честно
     // перерисовывает одинаковые кадры), но и не молчание.
+    // Провал за остановку — только если игра до этого рисовала ПОЛНОЦЕННО.
+    // Иначе под него попадает заставка, которая доиграла анимацию и замерла в
+    // ожидании ввода, — а таких экранов у любой игры больше, чем сломанных
+    // рендеров. Порог доли при этом абсолютный, а хвост — доля окна, поэтому
+    // без этого условия вердикт зависел бы ещё и от каденса раннера.
+    //
+    // Застывшие пиксели при полноценной отрисовке — НЕ повод для жёлтого.
+    // Игра, дошедшая до «game over», вставшая на паузу или показывающая
+    // спокойную сцену, честно перерисовывает одну и ту же картинку, и отличить
+    // её от рисунка в никуда без ввода нечем. Замерено: у здоровой фикстуры
+    // tiny-game это ровно тот случай на односекундном окне. Пишем пометкой в
+    // тексте — потерянный blit ловится тем, что отрисовки на игровом канвасе
+    // нет вовсе.
     const status = paintFrames === 0 ? (!frozen ? 'warn' : onDemand ? 'warn' : 'fail')
-      : stopped ? (onDemand ? 'warn' : 'fail')
-        : !enoughPaint ? 'warn'
-          : frozen ? 'warn' : 'pass';
+      : (stopped && enoughPaint) ? (onDemand ? 'warn' : 'fail')
+        : (stopped || !enoughPaint) ? 'warn'
+          : 'pass';
 
     add('render', status,
       paintFrames === 0
@@ -449,15 +497,20 @@ export function evaluateBudgets(m, b) {
             + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
           : `за ${m.seconds ?? '?'} с игра не выдала ни одной команды рисования и ни один пиксель канваса `
             + `не изменился (${gameFrames} кадров игры вхолостую) — рендер мёртв`
+            + (m.otherPaintFrames ? `. Но на другом канвасе отрисовка шла ${m.otherPaintFrames} кадров — `
+              + 'если игровой канвас не тот, укажи canvasSelector в конфиге' : '')
             + (onDemand ? '. renderMode: on-demand — для игры, которая рисует по событию, это норма' : ''))
         : stopped
-          ? `рендер остановился: последняя отрисовка за ${gap} кадров до конца окна `
+          ? `отрисовка встала: последняя за ${gap} кадров до конца окна `
             + `(всего ${paintFrames} из ${gameFrames} кадров игры, ${pct})`
+            + (enoughPaint ? '' : ' — либо рендер умер, либо экран доиграл анимацию и ждёт ввода')
             + (onDemand ? '. renderMode: on-demand — игра рисует по событию' : '')
-          : !enoughPaint
-            ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
-            : `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
-              + (frozen ? ' — но ни один пиксель канваса не изменился: рисунок уходит в никуда (потерянный blit, закадровый буфер, застывшая сцена)' : ''));
+          : paintFrames < MIN_FRAMES
+            ? `кадров с отрисовкой всего ${paintFrames} — судить о рендере не по чему`
+            : !enoughPaint
+              ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
+              : `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
+              + (frozen ? ' — но пиксели канваса не изменились: игра завершилась, стоит на паузе или рисует одно и то же' : ''));
   }
 
   // Числа кадра существуют, только если кадры были. Без замера ноль
@@ -478,20 +531,26 @@ export function evaluateBudgets(m, b) {
       `внутри rAF занято ${Math.round(m.mainThreadBusy * 100)}% времени` +
       (m.softwareGl ? ' · софтверный WebGL, сравнивать только с прошлыми прогонами' : ''));
 
-    // Длинные кадры — единственный сигнал, который ловит работу ВНЕ rAF:
-    // блокирующий setInterval не попадает ни в frameWorkMs, ни в mainThreadBusy,
-    // но растягивает интервал между кадрами. На каденс (кадр/с) гейт вешать
-    // нельзя — в headless он упирается в потолок браузера (30 кадр/с на обеих
-    // фикстурах) и мерил бы харнесс, а не игру. Доля длинных кадров от этого
-    // потолка не зависит: 33 мс — это не 50 мс.
-    const ratio = m.longFrameRatio ?? 0;
     const spikeStatus = m.frameWorkP99Ms <= budgetMs * 3 ? 'pass' : m.frameWorkP99Ms <= budgetMs * 6 ? 'warn' : 'fail';
+    add('frame-spikes', m.softwareGl && spikeStatus === 'fail' ? 'warn' : spikeStatus,
+      `p99 работы ${m.frameWorkP99Ms} мс, максимум ${m.frameWorkMaxMs} мс`);
+  }
+
+  // Подвисания считаются по кадрам ПРОБЫ и работы игры не требуют вовсе —
+  // значит и молчать вместе с числами кадра не должны. Иначе единственный
+  // детектор работы ВНЕ rAF выключался бы ровно для тех игр, которые всю
+  // работу там и делают: блокирующий setInterval не попадает ни в frameWorkMs,
+  // ни в «занято внутри rAF», но растягивает интервал между кадрами.
+  //
+  // На каденс (кадр/с) гейт вешать нельзя — в headless он упирается в потолок
+  // браузера (30 кадр/с на обеих фикстурах) и мерил бы харнесс, а не игру.
+  // Доля длинных кадров от этого потолка не зависит: 33 мс — это не 50 мс.
+  if (frames >= MIN_FRAMES) {
+    const ratio = m.longFrameRatio ?? 0;
     const stallStatus = ratio <= 0.02 ? 'pass' : ratio <= 0.2 ? 'warn' : 'fail';
-    const spikes = worst(spikeStatus, stallStatus);
-    add('frame-spikes', m.softwareGl && spikes === 'fail' ? 'warn' : spikes,
-      `p99 работы ${m.frameWorkP99Ms} мс, максимум ${m.frameWorkMaxMs} мс, ` +
-      `кадров дольше 50 мс: ${m.longFrames}/${m.frames} (${Math.round(ratio * 100)}%)` +
-      (stallStatus !== 'pass' ? ' — игра встаёт: работа вне rAF или тяжёлый кадр' : ''));
+    add('stalls', m.softwareGl && stallStatus === 'fail' ? 'warn' : stallStatus,
+      `кадров дольше 50 мс: ${m.longFrames}/${frames} (${Math.round(ratio * 100)}%)`
+      + (stallStatus !== 'pass' ? ' — игра встаёт: работа вне rAF или тяжёлый кадр' : ''));
   }
 
   add('errors', m.errorCount <= (b.errors ?? 0) ? 'pass' : m.errorCount <= (b.errors ?? 0) + 3 ? 'warn' : 'fail',
@@ -536,16 +595,15 @@ export function evaluateBudgets(m, b) {
   return checks;
 }
 
-/** Худший из статусов: одна красная причина красит проверку целиком. */
-function worst(...statuses) {
-  return statuses.includes('fail') ? 'fail' : statuses.includes('warn') ? 'warn' : 'pass';
-}
-
 export function printProbe(m) {
   const scene = m.scenario ? `, сцена «${m.scenario}»` : '';
   console.log(color.b(`\n${m.game} — probe (${m.viewport}, ${m.seconds}с${scene})`));
   for (const c of m.checks) console.log(`  ${verdictMark(c.status)} ${c.name.padEnd(13)} ${c.detail}`);
-  console.log(color.dim(`  draw calls: медиана ${m.drawCallsMedian}, p99 ${m.drawCallsP99}, макс ${m.drawCallsMax}` +
-    `${m.heapMb ? ` · heap ${m.heapMb} МБ` : ''}` +
-    `  ·  каденс ${m.frameIntervalMs} мс (${m.fpsAvg} кадр/с) — частота показа, не цена кадра`));
+  // Справочную строку печатаем только когда за ней стоят настоящие кадры:
+  // «медиана 0, каденс 0 мс (0 кадр/с)» — это не данные, а вид данных.
+  if (m.checks.some((c) => c.name === 'frame-work')) {
+    console.log(color.dim(`  draw calls: медиана ${m.drawCallsMedian}, p99 ${m.drawCallsP99}, макс ${m.drawCallsMax}` +
+      `${m.heapMb ? ` · heap ${m.heapMb} МБ` : ''}` +
+      `  ·  каденс ${m.frameIntervalMs} мс (${m.fpsAvg} кадр/с) — частота показа, не цена кадра`));
+  }
 }
