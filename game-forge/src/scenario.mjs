@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
+import { resolveViewport } from './browser.mjs';
 import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from './util.mjs';
 
 /**
@@ -11,7 +12,7 @@ import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from '
  *   goto, forge, eval, click, move, key, type, tick, wait, expect, shot
  */
 export async function runScenarios(cfg, opts = {}) {
-  const { only = null, seed = 1, stamp, kind = 'shots', headless = true } = opts;
+  const { only = null, seed = 1, stamp, kind = 'shots', headless = true, viewport = null } = opts;
   const adapter = cfg.adapterFile ? await loadAdapter(cfg) : null;
   const all = await loadScenarios(cfg);
   const list = only ? all.filter((s) => s.name === only) : all;
@@ -26,7 +27,11 @@ export async function runScenarios(cfg, opts = {}) {
   const results = [];
 
   for (const sc of list) {
-    const ctx = await boot(cfg, { viewport: sc.viewport || cfg.viewport, seed, adapter, headless });
+    // Тот же порядок, что у probe: явный флаг → вьюпорт сценария → конфиг.
+    // Иначе `forge all --viewport phone` кладёт в один отчёт телефонные числа
+    // и десктопные кадры, и арт-критик судит не ту сцену.
+    const vp = resolveViewport(viewport, sc, cfg);
+    const ctx = await boot(cfg, { viewport: vp, seed, adapter, headless });
     const shots = [];
     const checks = [];
     try {
@@ -39,7 +44,7 @@ export async function runScenarios(cfg, opts = {}) {
       const errors = filterNoise(ctx.errors());
       results.push({
         scenario: sc.name,
-        viewport: sc.viewport || cfg.viewport,
+        viewport: vp,
         note: sc.note || null,
         shots,
         checks,
@@ -136,7 +141,13 @@ export async function applyStep(page, step, ctx) {
   if (step.expect) {
     const ok = await page.evaluate(step.expect.fn ?? step.expect);
     const msg = step.expect.msg || 'expect';
-    checks.push({ name: msg, status: ok ? 'pass' : 'fail', detail: ok ? '' : `условие ложно на шаге ${i + 1}` });
+    // Строго true, а не «истинно»: естественная форма ассерта «враги
+    // заспавнены» — это `[...document.querySelectorAll('.enemy')]`, и пустой
+    // массив истинен. Такой expect проходил бы ровно на пустой сцене.
+    const detail = ok === true ? ''
+      : typeof ok === 'boolean' ? `условие ложно на шаге ${i + 1}`
+        : `шаг ${i + 1}: expect вернул ${preview(ok)} вместо true/false — ассерт написан неверно`;
+    checks.push({ name: msg, status: ok === true ? 'pass' : 'fail', detail });
   }
 
   if (step.shot && !ctx.skipShots) {
@@ -144,6 +155,17 @@ export async function applyStep(page, step, ctx) {
     const target = step.full ? page : (await page.$(sc.selector || 'canvas')) || page;
     await target.screenshot({ path: file });
     shots.push({ file, label: step.shot, note: step.note || null, step: i + 1 });
+  }
+}
+
+/** Короткое человекочитаемое значение для сообщения о неверном ассерте. */
+function preview(v) {
+  if (v === null || v === undefined) return String(v);
+  try {
+    const s = JSON.stringify(v);
+    return s === undefined ? typeof v : s.length > 60 ? `${s.slice(0, 57)}…` : s;
+  } catch {
+    return typeof v;
   }
 }
 

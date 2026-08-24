@@ -1,0 +1,25 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>HUD First (фикстура)</title>
+<!--
+  Статическая полоска счёта объявлена раньше игрового канваса — так бывает
+  с прелоадерами, фонами и HUD-слоями. `document.querySelector('canvas')`
+  брал именно её, и здоровая игра объявлялась нерисующей.
+-->
+<style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
+<canvas id="hud" width="200" height="30"></canvas>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const hud = document.getElementById('hud').getContext('2d');
+  hud.fillStyle = '#161b22'; hud.fillRect(0, 0, 200, 30);
+  hud.fillStyle = '#8b949e'; hud.font = '14px sans-serif'; hud.fillText('СЧЁТ 0', 8, 20);
+
+  const ctx = document.getElementById('game').getContext('2d');
+  let t = 0;
+  (function loop() {                          // игра рисуется каждый кадр
+    t++;
+    ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
+    ctx.fillStyle = '#7ee787'; ctx.fillRect((t * 4) % 560, 160, 80, 80);
+    requestAnimationFrame(loop);
+  })();
+</script>

@@ -26,6 +26,7 @@ ${color.b('forge')} — конвейер автономной разработк
 
 Флаги: --seed N, --viewport desktop|wide|portrait|phone|phoneLandscape|tablet, --headed
        --scenario <имя> — довести игру до тяжёлой сцены перед замером
+       вьюпорт: явный --viewport → вьюпорт сценария → вьюпорт конфига
 `;
 
 const cmd = process.argv[2];
@@ -71,6 +72,19 @@ function stamp() {
   return args.stamp || runStamp();
 }
 
+/**
+ * Строковый флаг: «не указан» — это null, а «указан без значения» — ошибка.
+ * Молча игнорировать `--viewport` (или `--scenario`) без значения нельзя:
+ * в шаблоне с незаданной переменной `--viewport $VP` замер уезжает на другой
+ * класс устройств и остаётся зелёным, а сцена — неподготовленной.
+ */
+function strFlag(name) {
+  const v = args[name];
+  if (v === undefined) return null;
+  if (typeof v !== 'string' || v === '') throw new Error(`--${name} требует значение`);
+  return v;
+}
+
 // --- команды ---
 
 function doctor() {
@@ -113,10 +127,12 @@ function init(dir) {
 async function cmdProbe(c) {
   const { metrics, dir } = await probe(c, {
     seconds: num(args.seconds, 8),
-    viewport: args.viewport || c.viewport,
+    // null, а не c.viewport: «вьюпорт не указан» должен дойти до probe как
+    // таковой, иначе сценарий со своим вьюпортом уже нечем перебить.
+    viewport: strFlag('viewport'),
     seed: num(args.seed, 1),
     headless: !args.headed,
-    scenario: typeof args.scenario === 'string' ? args.scenario : null,
+    scenario: strFlag('scenario'),
     stamp: stamp(),
   });
   printProbe(metrics);
@@ -131,6 +147,7 @@ async function cmdScenarios(c, kind) {
     seed: num(args.seed, 1),
     kind,
     headless: !args.headed,
+    viewport: strFlag('viewport'),
     stamp: stamp(),
   });
   printScenarios(summary);

@@ -8,6 +8,15 @@ export default {
   // desktop | wide | portrait | phone | phoneLandscape | tablet
   viewport: 'desktop',
 
+  // continuous — игра перерисовывается каждый кадр (аркады, экшены);
+  // on-demand  — рисует только по событию (пошаговые, Wordle-подобные).
+  // Во втором случае «за окно замера не нарисовано ничего» — норма.
+  renderMode: 'continuous',
+
+  // Какой канвас считать игровым, если их на странице несколько. Пусто —
+  // берётся самый большой видимый (индикаторы и прелоадеры обычно меньше).
+  // canvasSelector: '#game',
+
   // необязательны: без них работают probe и shots, но не sim
   adapter: './forge/adapter.mjs',
   scenarios: './forge/scenarios.mjs',

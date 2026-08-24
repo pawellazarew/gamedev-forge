@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ghost Backbuffer (фикстура)</title>
+<!--
+  Потерянный blit: игра честно рисует всю сцену в закадровый буфер каждый кадр,
+  но не переносит его на видимый канвас. Команд рисования полно, кадры игры
+  идут, игрок видит застывший экран.
+-->
+<style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const view = document.getElementById('game').getContext('2d');
+  const back = document.createElement('canvas');   // не в DOM: игрок его не видит
+  back.width = 640; back.height = 400;
+  const bctx = back.getContext('2d');
+
+  view.fillStyle = '#0b0e14'; view.fillRect(0, 0, 640, 400);
+  view.fillStyle = '#e6edf3'; view.font = '18px sans-serif';
+  view.fillText('первый кадр, дальше рисунок уходит в никуда', 20, 380);
+
+  let t = 0;
+  (function loop() {
+    t++;
+    bctx.fillStyle = '#0b0e14'; bctx.fillRect(0, 0, 640, 400);
+    bctx.fillStyle = '#7ee787'; bctx.fillRect((t * 3) % 600, 150, 40, 40);
+    // view.drawImage(back, 0, 0);  ← ровно эта строка и потеряна
+    requestAnimationFrame(loop);
+  })();
+</script>

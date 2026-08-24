@@ -19,6 +19,22 @@ describe('parseArgs', () => {
     assert.equal(a.seed, '5');
   });
 
+  test('форма --key=value разбирается, а не превращается в мусорный ключ', () => {
+    // Без этого `--scenario=storm-peak` давал ключ «scenario=storm-peak»,
+    // args.scenario оставался undefined — сцена молча не готовилась, и probe
+    // мерил стартовый экран под зелёным вердиктом.
+    const a = parseArgs(['game', '--scenario=storm-peak', '--viewport=phone', '--seconds=4']);
+    assert.equal(a.scenario, 'storm-peak');
+    assert.equal(a.viewport, 'phone');
+    assert.equal(a.seconds, '4');
+    assert.deepEqual(a._, ['game']);
+  });
+
+  test('знак = внутри значения сохраняется', () => {
+    const a = parseArgs(['--only=level=3']);
+    assert.equal(a.only, 'level=3');
+  });
+
   test('num подставляет умолчание для мусора', () => {
     assert.equal(num('12', 1), 12);
     assert.equal(num(undefined, 7), 7);

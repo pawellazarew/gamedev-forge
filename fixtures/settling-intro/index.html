@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Settling Intro (фикстура)</title>
+<!--
+  Титульный экран: полторы секунды проявляется, потом замирает и ждёт ввода.
+  Цикл жив, отрисовка честно прекращается — так выглядит любой экран паузы,
+  победы или меню. Гейт по хвосту окна принимал это за смерть рендера.
+-->
+<style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
+<canvas id="game" width="640" height="400"></canvas>
+<script>
+  const ctx = document.getElementById('game').getContext('2d');
+  const t0 = performance.now();
+  let dirty = true;
+  (function loop() {
+    const k = Math.min(1, (performance.now() - t0) / 1400);
+    if (dirty) {
+      ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
+      ctx.globalAlpha = k;
+      ctx.fillStyle = '#58a6ff'; ctx.fillRect(220, 150, 200, 100);
+      ctx.fillStyle = '#e6edf3'; ctx.font = '24px sans-serif'; ctx.fillText('НАЧАТЬ', 265, 210);
+      ctx.globalAlpha = 1;
+      if (k >= 1) dirty = false;              // доиграли — и замерли
+    }
+    requestAnimationFrame(loop);
+  })();
+  addEventListener('pointerdown', () => { dirty = true; });
+</script>

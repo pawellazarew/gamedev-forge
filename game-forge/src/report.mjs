@@ -73,15 +73,20 @@ ${shots.length ? shotsSection(shots, dir) : ''}
 
 function probeSection(p) {
   const cls = (s) => (s === 'pass' ? 'ok' : s === 'warn' ? 'warn' : 'bad');
-  return `<h2>Техника</h2>
-<div class="grid">
+  // Кадровые карточки печатаем, только если кадры мерили: иначе отчёт
+  // показывал бы «0 мс, запас ×0, 0 draw calls» для прогона, в котором не
+  // было ни одного кадра, — те же выдуманные нули, что и в проверках.
+  const measured = p.checks?.some((c) => c.name === 'frame-work');
+  const frameCards = !measured ? '' : `
   <div class="card"><div class="k">Работа в кадре</div><div class="v">${p.frameWorkMs ?? '—'} мс <span style="font-size:14px;color:var(--dim)">запас ×${p.headroom ?? '—'}</span></div></div>
   <div class="card"><div class="k">p99 / максимум</div><div class="v">${p.frameWorkP99Ms ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.frameWorkMaxMs ?? '—'} мс</span></div></div>
-  <div class="card"><div class="k">Главный поток занят</div><div class="v">${p.mainThreadBusy != null ? Math.round(p.mainThreadBusy * 100) + '%' : '—'}</div></div>
+  <div class="card"><div class="k">Занято внутри rAF</div><div class="v">${p.mainThreadBusy != null ? Math.round(p.mainThreadBusy * 100) + '%' : '—'}</div></div>
+  <div class="card"><div class="k">Draw calls (p99 / макс)</div><div class="v">${p.drawCallsP99 ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.drawCallsMax ?? '—'}</span></div></div>`;
+  return `<h2>Техника</h2>
+<div class="grid">${frameCards}
   <div class="card"><div class="k">Ошибок в консоли</div><div class="v ${p.errorCount ? 'bad' : 'ok'}">${p.errorCount}</div></div>
   <div class="card"><div class="k">Вес загруженного</div><div class="v">${p.bundleKb} КБ</div></div>
   <div class="card"><div class="k">Загрузка</div><div class="v">${p.loadMs} мс</div></div>
-  <div class="card"><div class="k">Draw calls (p99 / макс)</div><div class="v">${p.drawCallsP99 ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.drawCallsMax ?? '—'}</span></div></div>
 </div>
 <table><tbody>
 ${p.checks.map((c) => `<tr><td class="${cls(c.status)}">${c.status.toUpperCase()}</td><td><b>${esc(c.name)}</b></td><td>${esc(c.detail)}</td></tr>`).join('')}

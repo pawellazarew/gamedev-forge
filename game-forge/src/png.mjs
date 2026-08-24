@@ -75,6 +75,39 @@ export function decodePng(buffer) {
 }
 
 /**
+ * Доля изменившихся пикселей между двумя кадрами, 0..1.
+ *
+ * Побайтового сравнения буферов мало: один моргающий счётчик кадров в углу —
+ * и «картинка изменилась», хотя игра застыла. Доля же позволяет требовать
+ * заметного движения, а не любого.
+ *
+ * Разный размер — это не «немного изменилось», а другой кадр: 1.
+ */
+export function pixelDiffRatio(a, b, { threshold = 8 } = {}) {
+  const A = decodePng(a);
+  const B = decodePng(b);
+  if (A.width !== B.width || A.height !== B.height) return 1;
+
+  let changed = 0, n = 0;
+  // Та же прореженная сетка, что и во frameStats: полный проход по 4 млн
+  // пикселей ради «шевелится или нет» не нужен.
+  const stepX = Math.max(1, Math.floor(A.width / 240));
+  const stepY = Math.max(1, Math.floor(A.height / 240));
+  for (let y = 0; y < A.height; y += stepY) {
+    for (let x = 0; x < A.width; x += stepX) {
+      const ia = y * A.width * A.channels + x * A.channels;
+      const ib = y * B.width * B.channels + x * B.channels;
+      n++;
+      // Порог по каналу гасит шум сжатия и сглаживания, но не движение.
+      if (Math.abs(A.data[ia] - B.data[ib]) > threshold
+        || Math.abs(A.data[ia + 1] - B.data[ib + 1]) > threshold
+        || Math.abs(A.data[ia + 2] - B.data[ib + 2]) > threshold) changed++;
+    }
+  }
+  return n ? changed / n : 0;
+}
+
+/**
  * Статистика кадра: «живой» он или пустой прямоугольник.
  * Считаем по прореженной сетке — точности хватает, а времени уходит меньше.
  */
