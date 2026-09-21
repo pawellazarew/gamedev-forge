@@ -8,6 +8,7 @@
 - Визуальный план (artifact): https://claude.ai/artifact/3vWAGoZgWjcv1CkTqQ5kqz
 - Досье-ресёрч: `knowledge-base/games/engines/ai-native-engine-2026-09.md`
 - Смежный документ: `docs/plans/2026-09-18-forge-studio-design.md` (PR #7, пока **открыт**, ещё не в `main`) — его слайсы W1–W4 (телеметрия, тюнер, вкладки studio) не отдельная инициатива, а часть горизонта **Г1** этого плана
+- Наблюдаемость: журнал прогонов, цифры картинки и процесса — `docs/plans/2026-09-21-forge-observability-design.md`
 
 ## 1. Контекст и вопрос
 
