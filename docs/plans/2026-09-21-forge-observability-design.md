@@ -104,7 +104,7 @@ medianLevel   1             21               +20            достоверно
 <...>         <PLACEHOLDER> <PLACEHOLDER>    <PLACEHOLDER>  <PLACEHOLDER>
 ```
 
-Реальные числа в мок-таблице — из проверочного примера Brick Breaker 14.09 (SYNTHESIS-OBSERVABILITY.md, а не выдумка); всё остальное — заглушка формата.
+Реальные числа в мок-таблице — из проверочного примера Brick Breaker 14.09 (запись от 2026-09-14 в `games-business/brick-breaker/.forge/JOURNAL.md`: сборка `dist` против `dist-yandex`, бот `sniper`, 20 прогонов); всё остальное — заглушка формата.
 
 ## 6. Цифры игры
 
