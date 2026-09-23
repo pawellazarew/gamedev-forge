@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { resolveViewport } from './browser.mjs';
+import { realClick, hittableChecks, hittableFor, sweepScenarios, settleOf, HitError, WAIT_VISIBLE_MS } from './hittest.mjs';
 import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from './util.mjs';
 
 /**
@@ -9,12 +10,19 @@ import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from '
  * падаем ли мы на непройденном expect.
  *
  * Шаг — объект с любым набором ключей, они применяются в этом порядке:
- *   goto, forge, eval, click, move, key, type, tick, wait, expect, shot
+ *   goto, forge, eval, click, realClick, move, key, type, tick, wait, waitFor,
+ *   hittable, expect, shot
+ *
+ * В конце каждого сценария селекторы из `hittable` конфига (или сценария)
+ * проверяются на кликабельность, а к сценариям добавляется обход
+ * `hittable@<вьюпорт>` — см. hittest.mjs.
  */
 export async function runScenarios(cfg, opts = {}) {
   const { only = null, seed = 1, stamp, kind = 'shots', headless = true, viewport = null } = opts;
   const adapter = cfg.adapterFile ? await loadAdapter(cfg) : null;
-  const all = await loadScenarios(cfg);
+  // Обход по вьюпортам — обычные сценарии: их так же выбирает --only и так же
+  // видит отчёт.
+  const all = [...await loadScenarios(cfg), ...sweepScenarios(cfg, viewport)];
   const list = only ? all.filter((s) => s.name === only) : all;
   if (!list.length) {
     throw new Error(only
@@ -34,12 +42,28 @@ export async function runScenarios(cfg, opts = {}) {
     const ctx = await boot(cfg, { viewport: vp, seed, adapter, headless });
     const shots = [];
     const checks = [];
+    let at = 0;
     try {
       for (const [i, step] of (sc.steps || []).entries()) {
+        at = i;
         await applyStep(ctx.page, step, { sc, i, shotsDir, shots, checks, cfg });
       }
+      // Проверяем только дошедший до конца сценарий: после упавшего шага
+      // игра стоит посреди действия, и перекрытие там ничего не доказывает.
+      const sels = hittableFor(sc, cfg);
+      if (sels.length) {
+        // keepOnFail: сценарий закончился, и кадр провала должен показать
+        // перекрытие там, куда указывают координаты сообщения
+        const hit = await hittableChecks(ctx.page, sels, settleOf(cfg), { keepOnFail: true });
+        checks.push(...hit);
+        const failed = hit.find((c) => c.status === 'fail');
+        if (failed) await failShot(ctx.page, sc, shotsDir, shots, failed.detail);
+      }
     } catch (err) {
-      checks.push({ name: `шаг ${checks.length + 1}`, status: 'fail', detail: String(err).slice(0, 300) });
+      // Номер шага, а не число проверок: «шаг 3» на седьмом шаге отправлял искать не там
+      const msg = err instanceof HitError ? err.message : String(err);
+      checks.push({ name: `шаг ${at + 1}`, status: 'fail', detail: msg.slice(0, 400) });
+      if (err instanceof HitError) await failShot(ctx.page, sc, shotsDir, shots, msg);
     } finally {
       const errors = filterNoise(ctx.errors());
       results.push({
@@ -97,9 +121,16 @@ export async function applyStep(page, step, ctx) {
   if (step.click) {
     const box = await gameBox(page);
     if (step.click === 'center') await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    else if (typeof step.click === 'string') await page.click(step.click);
+    // Клик по селектору — только настоящим вводом и только если сверху лежит
+    // сам элемент. page.click Playwright тоже проверял перекрытие, но молча
+    // ждал полминуты, не умел касание и не говорил, какой слой мешает.
+    else if (typeof step.click === 'string') await realClick(page, step.click, clickOpts(step));
     else await page.mouse.click(box.x + step.click.x, box.y + step.click.y);
   }
+
+  // Клик игрока, а не `el.click()`: DOM-клик проходит сквозь любой слой сверху,
+  // и сценарий зеленел на игре, где не нажимается ни одна кнопка.
+  if (step.realClick) await realClick(page, step.realClick, clickOpts(step));
 
   if (step.move) {
     const box = await gameBox(page);
@@ -138,6 +169,18 @@ export async function applyStep(page, step, ctx) {
   if (step.wait) await page.waitForTimeout(step.wait);
   if (step.waitFor) await page.waitForFunction(step.waitFor, null, { timeout: step.timeout || 10000 });
 
+  // Проверка без клика: провал записывается, как у expect, и сценарий идёт дальше.
+  // При необходимости докручивает к элементу — как сделал бы игрок.
+  if (step.hittable) {
+    const sels = Array.isArray(step.hittable) ? step.hittable : [step.hittable];
+    // Прокрутку не оставляем даже на провале: дальше идут шаги, и в play они
+    // шли бы по прокрученной странице, а в probe — по исходной
+    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg));
+    checks.push(...hit);
+    const failed = hit.find((c) => c.status === 'fail');
+    if (failed && !ctx.skipShots) await failShot(page, sc, shotsDir, shots, failed.detail, i);
+  }
+
   if (step.expect) {
     const ok = await page.evaluate(step.expect.fn ?? step.expect);
     const msg = step.expect.msg || 'expect';
@@ -156,6 +199,25 @@ export async function applyStep(page, step, ctx) {
     await target.screenshot({ path: file });
     shots.push({ file, label: step.shot, note: step.note || null, step: i + 1 });
   }
+}
+
+function clickOpts(step) {
+  return { timeout: step.timeout || WAIT_VISIBLE_MS, times: step.times || 1 };
+}
+
+/**
+ * Кадр страницы целиком в момент провала: перекрытие — это про вёрстку
+ * вокруг канваса, и критику нужно видеть, что именно легло сверху.
+ */
+async function failShot(page, sc, shotsDir, shots, note, i = null) {
+  if (!shotsDir) return;
+  const label = i == null ? 'hittable' : `hittable-${i + 1}`;
+  const file = path.join(shotsDir, `${sc.name}-${label}.png`);
+  // Не снялось — провал уже записан, подменять его ошибкой скриншота нельзя
+  try {
+    await page.screenshot({ path: file });
+    shots.push({ file, label, note: `Провал кликабельности: ${note}`, step: i == null ? null : i + 1 });
+  } catch { /* кадра не будет */ }
 }
 
 /** Короткое человекочитаемое значение для сообщения о неверном ассерте. */

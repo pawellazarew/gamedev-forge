@@ -2,6 +2,7 @@ import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { applyStep } from './scenario.mjs';
 import { resolveViewport } from './browser.mjs';
+import { hittableChecks, hittableFor, hittableSummary, settleOf } from './hittest.mjs';
 import { frameStats, pixelDiffRatio } from './png.mjs';
 import { runDir, linkLatest, writeJson, mean, median, percentile, filterNoise, color, verdictMark } from './util.mjs';
 
@@ -61,12 +62,21 @@ export async function probe(cfg, opts = {}) {
 
   try {
     let scenePath = null;
+    let hitChecks = [];
     if (sc) {
       // Мерить надо тяжёлую сцену, а не стартовую комнату: `--scenario storm-peak`
       // прогоняет шаги обычного сценария (без съёмки) и только потом включает
       // счётчики. Без этого требование «замерить пик» не автоматизируется.
-      await prepareScene(ctx.page, sc, cfg);
+      // Перекрытие на шагах сцены — находка, а не сорванная подготовка.
+      hitChecks = (await prepareScene(ctx.page, sc, cfg)).filter((c) => c.kind === 'hittable');
       scenePath = sc.name;
+      // Кликабельность в конце сцены — там же, где её проверяет play: после
+      // окна за 8 секунд игры успели бы всплыть конец раунда или реклама, и
+      // вердикты probe и play по одному сценарию разошлись бы. До окна
+      // проверка ничего не портит: прокрутку она возвращает, а её ожидание
+      // заканчивается раньше, чем обнулятся счётчики кадров.
+      const sels = hittableFor(sc, cfg);
+      if (sels.length) hitChecks.push(...await hittableChecks(ctx.page, sels, settleOf(cfg)));
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
       //
@@ -164,6 +174,9 @@ export async function probe(cfg, opts = {}) {
       canvasStats = frameStats(after);
     } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
 
+    // Перекрытие — находка, а не сорванная сцена: числа замера остаются в силе
+    const extraChecks = hitChecks.length ? [hittableSummary(hitChecks)] : [];
+
     const metrics = computeMetrics(raw, {
       cfg, viewport, seconds, scenario: scenePath, headless,
       loadMs: ctx.loadMs,
@@ -171,6 +184,7 @@ export async function probe(cfg, opts = {}) {
       errors: filterNoise(ctx.errors()),
       canvas: canvasStats,
       pixelChange,
+      extraChecks,
     });
 
     writeJson(path.join(dir, 'probe.json'), metrics);
@@ -272,7 +286,9 @@ export async function prepareScene(page, sc, cfg) {
   const checks = [];
   for (const [i, step] of (sc.steps || []).entries()) {
     await applyStep(page, step, { sc, i, shots: [], checks, cfg, skipShots: true });
-    const failed = checks.find((c) => c.status === 'fail');
+    // Проваленный шаг hittable сцену не срывает: игра доведена куда надо,
+    // просто что-то перекрыто. probe отдаст это отдельной проверкой.
+    const failed = checks.find((c) => c.status === 'fail' && c.kind !== 'hittable');
     if (failed) {
       throw new Error(
         `Сцена «${sc.name}» не подготовлена: шаг ${i + 1}, «${failed.name}» — ${failed.detail}. ` +
@@ -289,7 +305,7 @@ export async function prepareScene(page, sc, cfg) {
  */
 export function computeMetrics(raw, {
   cfg, viewport, seconds, scenario = null, headless = true,
-  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null,
+  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null, extraChecks = [],
 }) {
   const budgetMs = cfg.budgets?.frameMs ?? 16.7;
 
@@ -375,7 +391,9 @@ export function computeMetrics(raw, {
     state: raw.state ?? null,
   };
 
-  metrics.checks = evaluateBudgets(metrics, cfg.budgets || {});
+  // extraChecks — проверки не про кадр (кликабельность в конце сценария),
+  // но вердикт у probe один, и красная из них обязана его красить.
+  metrics.checks = [...evaluateBudgets(metrics, cfg.budgets || {}), ...extraChecks];
   metrics.verdict = metrics.checks.some((c) => c.status === 'fail') ? 'fail'
     : metrics.checks.some((c) => c.status === 'warn') ? 'warn' : 'pass';
   return metrics;

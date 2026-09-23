@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { serve } from './server.mjs';
 import { launch, newPage, viewport as viewportPreset } from './browser.mjs';
+import { normalizeHittable } from './hittest.mjs';
 
 /**
  * Конфиг игры: <gameDir>/forge.config.mjs. Всё опционально кроме root/entry —
@@ -25,6 +26,9 @@ const DEFAULTS = {
   adapter: null,
   scenarios: null,
   references: 'forge/references',
+  // Что обязано оставаться кликабельным для настоящего игрока: массив
+  // селекторов или { selectors, viewports, setup } — см. hittest.mjs.
+  hittable: null,
   budgets: { frameMs: 16.7, errors: 0, bundleKb: 8000, loadMs: 3000 },
 };
 
@@ -45,6 +49,7 @@ export async function loadConfig(gameDir) {
     throw new Error(`renderMode: "${cfg.renderMode}" — допустимы только 'continuous' и 'on-demand'`);
   }
   cfg.budgets = { ...DEFAULTS.budgets, ...(mod.default.budgets || {}) };
+  cfg.hittable = normalizeHittable(cfg.hittable);
   cfg.dir = dir;
   cfg.rootDir = path.resolve(dir, cfg.root);
   cfg.referencesDir = path.resolve(dir, cfg.references);

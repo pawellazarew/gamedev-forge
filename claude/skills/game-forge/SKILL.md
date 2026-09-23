@@ -48,6 +48,10 @@ node bin/forge.mjs all <игра>          # probe + shots + sim + analyze + rep
 1. `node bin/forge.mjs init games-business/моя-игра`
 2. В `forge.config.mjs` указать `root`/`entry`/`viewport`, для 3D — `renderer: 'webgl'`.
 3. Написать сценарии — минимум `first-run` (первые 30 секунд) и `phone`.
+   Кнопки DOM жать шагом `realClick: '#btn'`, а не `eval: "…click()"` или
+   функцией адаптера: DOM-клик проходит сквозь перекрывающий слой, и сценарий
+   зеленеет на игре, где ничего не нажимается. Главные кнопки и панели —
+   в `hittable` конфига: play проверит их в конце сценариев и на трёх вьюпортах.
 4. Для симуляции — адаптер по `tools/game-forge/adapters/ADAPTER.md`:
    `start / tick / state / act / bots`. Требования к игре: фиксированный шаг,
    рендер отделён от логики, никакого `Date.now()` в игровой логике.

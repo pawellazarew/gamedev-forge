@@ -27,6 +27,8 @@ ${color.b('forge')} — конвейер автономной разработк
 Флаги: --seed N, --viewport desktop|wide|portrait|phone|phoneLandscape|tablet, --headed
        --scenario <имя> — довести игру до тяжёлой сцены перед замером
        вьюпорт: явный --viewport → вьюпорт сценария → вьюпорт конфига
+       hittable в конфиге — селекторы, по которым игрок обязан попадать:
+       play/shots проверяют их в конце сценариев и обходом hittable@<вьюпорт>
 `;
 
 const cmd = process.argv[2];
@@ -274,7 +276,9 @@ async function cmdAll(c) {
   const adapter = c.adapterFile ? await loadAdapter(c) : null;
 
   const metrics = await cmdProbe(c);
-  const scenarios = scenarioDefs.length ? await cmdScenarios(c, 'shots') : null;
+  // Обход hittable — тоже сценарии: без этого `all` у игры без своих
+  // сценариев пропускал бы проверку кликабельности целиком.
+  const scenarios = scenarioDefs.length || c.hittable ? await cmdScenarios(c, 'shots') : null;
 
   let analysis = null;
   if (adapter) {
