@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hit-reach</title>
+<style>
+  body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #16202c; color: #e8eef5; }
+  /* Страница шире телефона: visual viewport уже лэйаут-вьюпорта, и касание
+     надо пересчитывать от сдвинутого экрана, а не от innerWidth */
+  #wide { width: 728px; height: 300px; background: #2a3a4c; }
+  #pan { position: absolute; left: 560px; top: 320px; padding: 10px 20px; }
+  /* Список с прокруткой: игрок докрутит, проверка обязана тоже */
+  #list { width: 220px; height: 120px; overflow: auto; border: 1px solid #567; }
+  #list div { height: 60px; }
+  /* Контейнер с overflow: hidden: программно прокрутить можно, игроку — нет */
+  #locked { width: 220px; height: 100px; overflow: hidden; border: 1px solid #567; }
+  #locked div { height: 60px; }
+  #pulse { animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { transform: scale(1.15); } }
+  #tall { height: 1800px; }
+</style>
+</head>
+<body>
+<div id="wide"></div>
+<button id="pan">за краем экрана</button>
+<div id="list"><div>1</div><div>2</div><div>3</div><div>4</div><button id="inlist">в списке</button></div>
+<div id="locked"><div>1</div><div>2</div><button id="inlocked">в запертом</button></div>
+<button id="late" disabled>включится</button>
+<button id="dead" disabled>выключена навсегда</button>
+<button id="pulse">пульс</button>
+<div id="tall"></div>
+<button id="below">ниже экрана</button>
+<script>
+  // Кнопки достижимы игроком, кроме #inlocked (заперта overflow: hidden) и
+  // #dead (disabled). Счётчики показывают, дошёл ли настоящий клик.
+  window.clicks = {};
+  for (const b of document.querySelectorAll('button')) {
+    b.addEventListener('click', () => { window.clicks[b.id] = (window.clicks[b.id] || 0) + 1; });
+  }
+  setTimeout(() => { document.getElementById('late').disabled = false; }, 600);
+</script>
+</body>
+</html>

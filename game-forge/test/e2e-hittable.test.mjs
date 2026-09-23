@@ -170,6 +170,53 @@ describe('кликабельность: probe --scenario', opts, () => {
   });
 });
 
+describe('кликабельность: достижимость', opts, () => {
+  // Находки ревью PR #9: касание мимо кнопки на широкой странице, ложный
+  // красный на строке прокручиваемого списка, ложный зелёный на кнопке в
+  // контейнере с overflow: hidden и на выключенной кнопке, 2 с ожидания на
+  // вечной анимации.
+  let summary, reachCfg;
+  const byName = (n) => summary.scenarios.find((s) => s.scenario === n);
+  const failOf = (n) => byName(n).checks.find((c) => c.status === 'fail');
+
+  before(async () => {
+    reachCfg = await loadConfig(path.join(ROOT, 'fixtures/hit-reach'));
+    ({ summary } = await runScenarios(reachCfg, { kind: 'play' }));
+  });
+
+  test('на телефоне касание попадает в кнопку за краем экрана, списке и ниже экрана', () => {
+    // Раньше видимое считалось по innerWidth: на странице шире экрана
+    // касание уходило мимо кнопки, а шаг оставался зелёным
+    for (const n of ['reach-phone', 'reach-desktop']) {
+      assert.equal(byName(n).status, 'pass', `${n}: ${JSON.stringify(failOf(n))}`);
+    }
+  });
+
+  test('клик ждёт, пока кнопка включится, и не тормозит на вечной анимации', () => {
+    assert.equal(byName('pulse').status, 'pass', JSON.stringify(failOf('pulse')));
+  });
+
+  test('выключенная кнопка — провал клика с причиной, а не тихий пропуск', () => {
+    assert.match(failOf('dead').detail, /«#dead» выключен \(disabled\)/);
+  });
+
+  test('туда, куда игрок не докрутит, проверка тоже не докручивает', () => {
+    // scrollIntoView крутит и overflow: hidden — без отката проверка
+    // зеленела бы на недостижимой кнопке
+    assert.match(failOf('locked').detail, /«#inlocked» за экраном игрока.*overflow: hidden у div#locked/);
+    assert.match(failOf('page-locked').detail, /«#below» за экраном игрока.*overflow: hidden у body/);
+  });
+
+  test('проваленный шаг hittable в probe — находка, а не сорванная сцена', async () => {
+    const { metrics } = await probe(reachCfg, { seconds: 1, scenario: 'locked' });
+    const hit = metrics.checks.find((c) => c.name === 'hittable');
+    assert.equal(hit.status, 'fail');
+    assert.match(hit.detail, /div#locked/);
+    assert.ok(metrics.frames > 0, 'замер состоялся');
+    assert.equal(metrics.verdict, 'fail');
+  });
+});
+
 describe('кликабельность: CLI', opts, () => {
   test('play на перекрытой кнопке выходит с кодом 2', () => {
     let code = 0, out = '';

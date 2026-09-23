@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { resolveViewport } from './browser.mjs';
-import { realClick, hittableChecks, hittableFor, sweepScenarios, HitError, WAIT_VISIBLE_MS } from './hittest.mjs';
+import { realClick, hittableChecks, hittableFor, sweepScenarios, settleOf, HitError, WAIT_VISIBLE_MS } from './hittest.mjs';
 import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from './util.mjs';
 
 /**
@@ -52,7 +52,7 @@ export async function runScenarios(cfg, opts = {}) {
       // игра стоит посреди действия, и перекрытие там ничего не доказывает.
       const sels = hittableFor(sc, cfg);
       if (sels.length) {
-        const hit = await hittableChecks(ctx.page, sels);
+        const hit = await hittableChecks(ctx.page, sels, settleOf(cfg));
         checks.push(...hit);
         const failed = hit.find((c) => c.status === 'fail');
         if (failed) await failShot(ctx.page, sc, shotsDir, shots, failed.detail);
@@ -121,7 +121,7 @@ export async function applyStep(page, step, ctx) {
     if (step.click === 'center') await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
     // Клик по селектору — только настоящим вводом и только если сверху лежит
     // сам элемент. page.click Playwright тоже проверял перекрытие, но молча
-    // ждал полминуты и не умел касание.
+    // ждал полминуты, не умел касание и не говорил, какой слой мешает.
     else if (typeof step.click === 'string') await realClick(page, step.click, clickOpts(step));
     else await page.mouse.click(box.x + step.click.x, box.y + step.click.y);
   }
@@ -167,10 +167,11 @@ export async function applyStep(page, step, ctx) {
   if (step.wait) await page.waitForTimeout(step.wait);
   if (step.waitFor) await page.waitForFunction(step.waitFor, null, { timeout: step.timeout || 10000 });
 
-  // Проверка без клика: провал записывается, как у expect, и сценарий идёт дальше
+  // Проверка без клика: провал записывается, как у expect, и сценарий идёт дальше.
+  // При необходимости докручивает к элементу — как сделал бы игрок.
   if (step.hittable) {
     const sels = Array.isArray(step.hittable) ? step.hittable : [step.hittable];
-    const hit = await hittableChecks(page, sels);
+    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg));
     checks.push(...hit);
     const failed = hit.find((c) => c.status === 'fail');
     if (failed && !ctx.skipShots) await failShot(page, sc, shotsDir, shots, failed.detail, i);

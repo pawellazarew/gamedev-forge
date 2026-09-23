@@ -15,6 +15,7 @@ describe('normalizeHittable — одна форма конфига', () => {
     assert.deepEqual(h.viewports, DEFAULT_HIT_VIEWPORTS);
     assert.deepEqual(DEFAULT_HIT_VIEWPORTS, ['desktop', 'phoneLandscape', 'phone']);
     assert.deepEqual(h.setup, []);
+    assert.equal(h.settleMs, 1000);
   });
 
   test('полная запись сохраняет вьюпорты и шаги подготовки', () => {
@@ -43,6 +44,8 @@ describe('normalizeHittable — одна форма конфига', () => {
     assert.throws(() => normalizeHittable({ selectors: ['#a'], viewports: ['phoneLandscpe'] }), /Неизвестный вьюпорт/);
     assert.throws(() => normalizeHittable({ selectors: ['#a'], viewports: 'phone' }), /массив имён/);
     assert.throws(() => normalizeHittable({ selectors: ['#a'], setup: { eval: 'x' } }), /массив шагов/);
+    assert.throws(() => normalizeHittable({ selectors: ['#a'], settleMs: '2s' }), /settleMs/);
+    assert.equal(normalizeHittable({ selectors: ['#a'], settleMs: 3000 }).settleMs, 3000);
   });
 
   test('loadConfig прогоняет секцию через ту же проверку', async () => {
@@ -129,6 +132,10 @@ describe('hitMessage — что мешает и что чинить', () => {
     assert.match(hitMessage('#a', { reason: 'invisible', w: 0, h: 0 }), /не виден: 0×0/);
     assert.match(hitMessage('#a', { reason: 'invisible', w: 10, h: 10, visibility: 'hidden' }), /visibility: hidden/);
     assert.match(hitMessage('#a', { reason: 'offscreen', w: 10, h: 10, rect: [900, 0], vw: 390, vh: 844 }), /за экраном.*390×844/);
+    assert.match(hitMessage('#a', { reason: 'offscreen', w: 10, h: 10, rect: [0, 900], vw: 390, vh: 844, locked: 'div#list' }),
+      /докрутить туда нельзя — overflow: hidden у div#list/);
+    assert.match(hitMessage('#a', { reason: 'disabled' }), /выключен/);
+    assert.match(hitMessage('.up', { reason: 'invisible', w: 0, h: 0, count: 4 }), /все 4 совпадения/);
     assert.match(hitMessage('#a', { reason: 'no-pointer-events' }), /pointer-events: none/);
     assert.match(hitMessage('#a', { reason: 'bad-selector', error: 'Unexpected token' }), /неверный селектор/);
   });
@@ -136,9 +143,9 @@ describe('hitMessage — что мешает и что чинить', () => {
 
 describe('hittableSummary — одна проверка для probe', () => {
   test('провал собирает все причины', () => {
-    const c = hittableSummary(['#a', '#b'], [
-      { name: 'кликабелен «#a»', status: 'fail', detail: 'A перекрыт' },
-      { name: 'кликабелен «#b»', status: 'pass', detail: '' },
+    const c = hittableSummary([
+      { name: 'кликабелен «#a»', status: 'fail', detail: 'A перекрыт', selector: '#a' },
+      { name: 'кликабелен «#b»', status: 'pass', detail: '', selector: '#b' },
     ]);
     assert.equal(c.name, 'hittable');
     assert.equal(c.status, 'fail');
@@ -146,7 +153,7 @@ describe('hittableSummary — одна проверка для probe', () => {
   });
 
   test('успех перечисляет, что проверено', () => {
-    const c = hittableSummary(['#a', '#b'], [{ status: 'pass' }, { status: 'pass' }]);
+    const c = hittableSummary([{ status: 'pass', selector: '#a' }, { status: 'pass', selector: '#b' }, { status: 'pass', selector: '#a' }]);
     assert.equal(c.status, 'pass');
     assert.match(c.detail, /#a, #b/);
   });

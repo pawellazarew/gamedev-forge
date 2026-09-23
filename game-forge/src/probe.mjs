@@ -2,7 +2,7 @@ import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { applyStep } from './scenario.mjs';
 import { resolveViewport } from './browser.mjs';
-import { hittableChecks, hittableFor, hittableSummary } from './hittest.mjs';
+import { hittableChecks, hittableFor, hittableSummary, settleOf } from './hittest.mjs';
 import { frameStats, pixelDiffRatio } from './png.mjs';
 import { runDir, linkLatest, writeJson, mean, median, percentile, filterNoise, color, verdictMark } from './util.mjs';
 
@@ -62,18 +62,14 @@ export async function probe(cfg, opts = {}) {
 
   try {
     let scenePath = null;
-    const extraChecks = [];
+    let hitChecks = [];
     if (sc) {
       // Мерить надо тяжёлую сцену, а не стартовую комнату: `--scenario storm-peak`
       // прогоняет шаги обычного сценария (без съёмки) и только потом включает
       // счётчики. Без этого требование «замерить пик» не автоматизируется.
-      await prepareScene(ctx.page, sc, cfg);
+      // Перекрытие на шагах сцены — находка, а не сорванная подготовка.
+      hitChecks = (await prepareScene(ctx.page, sc, cfg)).filter((c) => c.kind === 'hittable');
       scenePath = sc.name;
-      // Конец сценария — то же место, где его проверяет play. До окна замера:
-      // ожидание освобождения элемента не должно попасть в счётчики кадров.
-      // Перекрытие — находка, а не сорванная сцена: замер продолжается.
-      const sels = hittableFor(sc, cfg);
-      if (sels.length) extraChecks.push(hittableSummary(sels, await hittableChecks(ctx.page, sels)));
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
       //
@@ -170,6 +166,14 @@ export async function probe(cfg, opts = {}) {
       // чёрным канвасом проходила на цветах окружающей вёрстки.
       canvasStats = frameStats(after);
     } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
+
+    // Кликабельность в конце сцены — там же, где её проверяет play, но ПОСЛЕ
+    // окна: проверка ждёт освобождения элементов и может докрутить к ним,
+    // как игрок, и ни то ни другое не должно попасть в замер. Перекрытие —
+    // находка, а не сорванная сцена: числа замера остаются в силе.
+    const sels = sc ? hittableFor(sc, cfg) : [];
+    if (sels.length) hitChecks.push(...await hittableChecks(ctx.page, sels, settleOf(cfg)));
+    const extraChecks = hitChecks.length ? [hittableSummary(hitChecks)] : [];
 
     const metrics = computeMetrics(raw, {
       cfg, viewport, seconds, scenario: scenePath, headless,
@@ -280,7 +284,9 @@ export async function prepareScene(page, sc, cfg) {
   const checks = [];
   for (const [i, step] of (sc.steps || []).entries()) {
     await applyStep(page, step, { sc, i, shots: [], checks, cfg, skipShots: true });
-    const failed = checks.find((c) => c.status === 'fail');
+    // Проваленный шаг hittable сцену не срывает: игра доведена куда надо,
+    // просто что-то перекрыто. probe отдаст это отдельной проверкой.
+    const failed = checks.find((c) => c.status === 'fail' && c.kind !== 'hittable');
     if (failed) {
       throw new Error(
         `Сцена «${sc.name}» не подготовлена: шаг ${i + 1}, «${failed.name}» — ${failed.detail}. ` +
