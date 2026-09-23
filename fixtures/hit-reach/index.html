@@ -35,6 +35,9 @@
   #lateBox { position: relative; display: inline-block; }
   #lateBox .veil { position: absolute; inset: 0; z-index: 2; display: none; }
   #lateBox .veil.on { display: block; }
+  /* Веб-компонент в прокручиваемом списке: обход обязан пройти сквозь shadow root */
+  #list2 { width: 220px; height: 80px; overflow: auto; border: 1px solid #567; }
+  #list2 .pad { height: 120px; }
   #tall { height: 1800px; }
 </style>
 </head>
@@ -50,15 +53,33 @@
 <div id="game"><button id="full">во весь экран</button></div>
 <div id="stage"><div id="wrap"><button id="abs">на сцене</button></div></div>
 <span id="lateBox"><button id="later">позже накроют</button><span class="veil"></span></span>
+<div id="list2"><div class="pad"></div><shop-item></shop-item></div>
 <div id="tall"></div>
 <button id="below">ниже экрана</button>
 <script>
   // Кнопки достижимы игроком, кроме #inlocked (заперта overflow: hidden),
   // #dead (disabled) и #later после coverLaterIn(). Счётчики показывают, дошёл ли настоящий клик.
   window.clicks = {};
-  for (const b of document.querySelectorAll('button')) {
-    b.addEventListener('click', () => { window.clicks[b.id] = (window.clicks[b.id] || 0) + 1; });
-  }
+  const count = (b) => b.addEventListener('click', () => { window.clicks[b.id] = (window.clicks[b.id] || 0) + 1; });
+  customElements.define('shop-item', class extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: 'open' });
+      root.innerHTML = '<button id="sb">в shadow</button>';
+      count(root.getElementById('sb'));
+    }
+  });
+  for (const b of document.querySelectorAll('button')) count(b);
+  // Игра, которая реагирует на прокрутку: чистая проверка не должна её будить
+  window.scrolls = 0;
+  document.getElementById('list').addEventListener('scroll', () => { window.scrolls++; });
+  // Полноэкранный CSS игры: body — свой контейнер прокрутки. free — body
+  // листается (html заперт), иначе заперты оба.
+  window.fullscreenCss = (free) => {
+    const h = document.documentElement.style, b = document.body.style;
+    h.overflow = 'hidden'; h.height = '100%';
+    b.overflow = free ? 'hidden auto' : 'hidden'; b.height = '100%';
+    window.scrollTo(0, 0); document.body.scrollTop = 0;
+  };
   setTimeout(() => { document.getElementById('late').disabled = false; }, 600);
   window.coverLaterIn = (ms) => setTimeout(() => document.querySelector('#lateBox .veil').classList.add('on'), ms);
 </script>

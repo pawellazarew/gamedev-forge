@@ -15,7 +15,8 @@ const reachable = (vp) => ({
     { realClick: '#buy' },
     { realClick: '#full' },
     { realClick: '#abs' },
-    { expect: { fn: () => ['pan', 'inlist', 'below', 'late', 'buy', 'full', 'abs'].every((id) => window.clicks[id] === 1), msg: 'каждый клик дошёл до своей кнопки' } },
+    { realClick: '#sb' },
+    { expect: { fn: () => ['pan', 'inlist', 'below', 'late', 'buy', 'full', 'abs', 'sb'].every((id) => window.clicks[id] === 1), msg: 'каждый клик дошёл до своей кнопки' } },
     // Проверка без клика — после неё прокрутка возвращается как была
     { eval: 'window.scrollTo(0, 0); document.getElementById("shop").scrollTop = 0' },
     { hittable: ['#buy', '#below'], timeout: 0 },
@@ -44,6 +45,43 @@ export default [
     steps: [{ eval: "document.body.style.overflow = 'hidden'; window.scrollTo(0, 0)" }, { hittable: '#below' }],
   },
   { name: 'dead', viewport: 'desktop', steps: [{ realClick: '#dead', timeout: 800 }] },
+  {
+    name: 'quiet-check',
+    viewport: 'desktop',
+    note: 'Чистая проверка докручивает список и возвращает — игра не должна услышать ни одного scroll',
+    steps: [
+      { eval: 'document.getElementById("list").scrollTop = 0; window.scrolls = 0' },
+      { hittable: '#inlist', timeout: 0, wait: 300 },
+      { expect: { fn: () => window.scrolls === 0 && document.getElementById('list').scrollTop === 0, msg: 'ни одного scroll, прокрутка на месте' } },
+    ],
+  },
+  {
+    name: 'body-free',
+    viewport: 'desktop',
+    note: 'html заперт, body листается: кнопка ниже экрана достижима, прокрутка body возвращается',
+    steps: [
+      { eval: 'window.fullscreenCss(true)' },
+      { hittable: '#below', timeout: 0 },
+      { expect: { fn: () => document.body.scrollTop === 0, msg: 'прокрутка body вернулась' } },
+      { realClick: '#below' },
+      { expect: { fn: () => window.clicks.below === 1, msg: 'клик дошёл' } },
+    ],
+  },
+  { name: 'body-locked', viewport: 'desktop', steps: [{ eval: 'window.fullscreenCss(false)' }, { hittable: '#below', timeout: 0 }] },
+  {
+    name: 'fail-shot-scrolled',
+    viewport: 'desktop',
+    note: 'Перекрытая кнопка ниже экрана: кадр провала снимается там, где перекрытие видно',
+    steps: [
+      { eval: `const b = document.getElementById('below').getBoundingClientRect();
+        const v = document.createElement('div');
+        Object.assign(v.style, { position: 'absolute', left: (b.left + scrollX) + 'px', top: (b.top + scrollY) + 'px',
+          width: b.width + 'px', height: b.height + 'px', zIndex: 9 });
+        v.id = 'cover'; document.body.appendChild(v); window.scrollTo(0, 0);` },
+      { hittable: '#below', timeout: 0 },
+      { expect: { fn: () => window.scrollY > 0, msg: 'после провала страница докручена к перекрытию' } },
+    ],
+  },
   { name: 'bad-selector', viewport: 'desktop', steps: [{ realClick: 'div[' }] },
   {
     name: 'late-cover',

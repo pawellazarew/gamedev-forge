@@ -55,10 +55,14 @@ function probeHit(els, opts) {
     if (cls.length) s += `.${cls.slice(0, 3).join('.')}`;
     return s;
   };
+  // Родитель в плоском дереве: сквозь слот и границу shadow root. По
+  // parentElement обход обрывался на shadow root, и список с прокруткой
+  // вокруг веб-компонента не считался контейнером.
+  const up = (n) => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
   // Слой, в котором лежит узел: ближайший предок с позиционированием и
   // явным z-index. Именно он решает, кто сверху, и именно его чинят.
   const layerOf = (n) => {
-    for (let cur = n; cur && cur.nodeType === 1; cur = cur.parentElement) {
+    for (let cur = n; cur && cur.nodeType === 1; cur = up(cur)) {
       const cs = getComputedStyle(cur);
       if (cs.position !== 'static' && cs.zIndex !== 'auto') return { el: describe(cur), z: cs.zIndex };
     }
@@ -92,7 +96,17 @@ function probeHit(els, opts) {
     }
     return { cs: getComputedStyle(document.body), el: document.body };
   };
-  const atTop = (a) => !a || a === document.body || a === document.documentElement;
+  // При `html, body { overflow: hidden }` scrollingElement — html, а крутится
+  // body; запоминать надо оба, иначе прокрутка body не вернётся.
+  const atTop = (a) => !a || a === document.documentElement;
+  // overflow у body уходит на весь экран, только пока у html он visible. При
+  // `html, body { overflow: hidden }` — обычном CSS полноэкранной игры —
+  // body становится своим контейнером прокрутки, и пропускать его значило
+  // зеленеть на кнопке, до которой игрок не докрутит.
+  const htmlVisible = () => {
+    const cs = getComputedStyle(document.documentElement);
+    return cs.overflowX === 'visible' && cs.overflowY === 'visible';
+  };
   // Создаёт ли узел containing block для fixed-потомков (и для absolute тоже)
   const makesCB = (cs) => cs.transform !== 'none' || cs.perspective !== 'none' || cs.filter !== 'none'
     || (cs.backdropFilter && cs.backdropFilter !== 'none')
@@ -102,14 +116,14 @@ function probeHit(els, opts) {
   // непозиционированная обёртка. Без этого обе объявлялись «за экраном».
   const containingBlock = (n) => {
     const pos = getComputedStyle(n).position;
-    let a = n.parentElement;
+    let a = up(n);
     if (pos === 'fixed') {
-      while (!atTop(a) && !makesCB(getComputedStyle(a))) a = a.parentElement;
+      while (!atTop(a) && !makesCB(getComputedStyle(a))) a = up(a);
     } else if (pos === 'absolute') {
       while (!atTop(a)) {
         const cs = getComputedStyle(a);
         if (cs.position !== 'static' || makesCB(cs)) break;
-        a = a.parentElement;
+        a = up(a);
       }
     }
     return atTop(a) ? null : a;
@@ -117,6 +131,8 @@ function probeHit(els, opts) {
   const clippers = () => {
     const out = [];
     for (let a = containingBlock(el); a; a = containingBlock(a)) {
+      // overflow body, ушедший на экран, учитывает docOverflow
+      if (a === document.body && htmlVisible()) continue;
       const cs = getComputedStyle(a);
       if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push({ a, cs });
     }
@@ -146,6 +162,13 @@ function probeHit(els, opts) {
     if (se) {
       const d = docOverflow();
       list.push({ a: se, x: HIDE.test(d.cs.overflowX), y: HIDE.test(d.cs.overflowY), owner: d.el });
+    }
+    // body — свой контейнер прокрутки (см. htmlVisible): его прокрутку тоже
+    // запоминаем, даже если он попал сюда не как обрезающий предок
+    const body = document.body;
+    if (body && body !== se && !htmlVisible() && !list.some((st) => st.a === body)) {
+      const cs = getComputedStyle(body);
+      list.push({ a: body, x: HIDE.test(cs.overflowX), y: HIDE.test(cs.overflowY) });
     }
     for (const st of list) { st.left = st.a.scrollLeft; st.top = st.a.scrollTop; }
     return list;
@@ -201,7 +224,18 @@ function probeHit(els, opts) {
   // Проверка не должна двигать игру: возвращаем прокрутку как была. Для
   // клика не возвращаем — жать надо туда, куда докрутили. Сдвиг visual
   // viewport на телефоне вернуть нечем — API для него нет.
-  if (opts.restore && saved) for (const st of saved) { st.a.scrollLeft = st.left; st.a.scrollTop = st.top; }
+  if (opts.restore && saved) {
+    const changed = saved.some((st) => st.a.scrollLeft !== st.left || st.a.scrollTop !== st.top);
+    for (const st of saved) { st.a.scrollLeft = st.left; st.a.scrollTop = st.top; }
+    // Прокрутка туда и обратно всё равно шлёт scroll/scrollend на следующем
+    // кадре, и игра, закрывающая попап по прокрутке, менялась бы от чистой
+    // проверки. Глушим их на перехвате у window, пока они не пройдут.
+    if (changed) {
+      const stop = (e) => e.stopImmediatePropagation();
+      for (const t of ['scroll', 'scrollend']) window.addEventListener(t, stop, true);
+      setTimeout(() => { for (const t of ['scroll', 'scrollend']) window.removeEventListener(t, stop, true); }, 100);
+    }
+  }
   return res;
 }
 
@@ -283,10 +317,15 @@ export async function assertHittable(page, selector, { settleMs = HIT_SETTLE_MS 
  * kind: 'hittable' отличает их от expect — в probe перекрытие — находка, а
  * не сорванная подготовка сцены.
  */
-export async function hittableChecks(page, selectors, settleMs = HIT_SETTLE_MS) {
+export async function hittableChecks(page, selectors, settleMs = HIT_SETTLE_MS, { keepOnFail = false } = {}) {
   // restore: проверка в конце сценария или посреди него не двигает игру —
   // иначе probe мерил бы уже прокрученную сцену
   const results = await waitHittable(page, selectors, { settleMs, restore: true });
+  // keepOnFail: на провале докрутить обратно к первому проваленному
+  // элементу, чтобы кадр провала показывал перекрытие и совпадал с
+  // координатами в сообщении. Сценарий к этому моменту уже красный.
+  const firstFail = results.find((r) => !r.ok);
+  if (keepOnFail && firstFail) await hitTest(page, firstFail.selector, { restore: false });
   return results.map((r) => ({
     name: `кликабелен «${r.selector}»`,
     status: r.ok ? 'pass' : 'fail',

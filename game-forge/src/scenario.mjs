@@ -52,7 +52,7 @@ export async function runScenarios(cfg, opts = {}) {
       // игра стоит посреди действия, и перекрытие там ничего не доказывает.
       const sels = hittableFor(sc, cfg);
       if (sels.length) {
-        const hit = await hittableChecks(ctx.page, sels, settleOf(cfg));
+        const hit = await hittableChecks(ctx.page, sels, settleOf(cfg), { keepOnFail: true });
         checks.push(...hit);
         const failed = hit.find((c) => c.status === 'fail');
         if (failed) await failShot(ctx.page, sc, shotsDir, shots, failed.detail);
@@ -171,7 +171,7 @@ export async function applyStep(page, step, ctx) {
   // При необходимости докручивает к элементу — как сделал бы игрок.
   if (step.hittable) {
     const sels = Array.isArray(step.hittable) ? step.hittable : [step.hittable];
-    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg));
+    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg), { keepOnFail: !ctx.skipShots });
     checks.push(...hit);
     const failed = hit.find((c) => c.status === 'fail');
     if (failed && !ctx.skipShots) await failShot(page, sc, shotsDir, shots, failed.detail, i);

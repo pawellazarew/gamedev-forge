@@ -218,6 +218,30 @@ describe('кликабельность: достижимость', opts, () => {
     }
   });
 
+  test('полноэкранный CSS: запертый body краснеет, листающийся — проходит и возвращает прокрутку', () => {
+    // Третий круг ревью: при `html, body { overflow: hidden }` body — свой
+    // контейнер прокрутки, и пропуск его давал ложный зелёный
+    assert.match(failOf('body-locked').detail, /«#below» за экраном игрока.*overflow: hidden у body/);
+    assert.equal(byName('body-free').status, 'pass', JSON.stringify(failOf('body-free')));
+  });
+
+  test('кнопка в shadow DOM внутри прокручиваемого списка кликается', () => {
+    // Обход по parentElement обрывался на shadow root. Клик по #sb сверяет
+    // expect сценариев reach-*.
+    assert.equal(byName('reach-desktop').status, 'pass');
+  });
+
+  test('чистая проверка не будит игру событиями прокрутки', () => {
+    assert.equal(byName('quiet-check').status, 'pass', JSON.stringify(failOf('quiet-check')));
+  });
+
+  test('кадр провала снят там, где перекрытие видно', () => {
+    const sc = byName('fail-shot-scrolled');
+    assert.match(failOf('fail-shot-scrolled').detail, /«#below» перекрыт.*div#cover/);
+    assert.equal(sc.checks.find((c) => /докручена к перекрытию/.test(c.name)).status, 'pass');
+    assert.ok(sc.shots.some((s) => s.label.startsWith('hittable')), 'кадр провала есть');
+  });
+
   test('неверный селектор — сразу и с причиной, а не таймаут с «пропал из документа»', () => {
     const f = failOf('bad-selector');
     assert.match(f.detail, /«div\[» — неверный селектор/);
