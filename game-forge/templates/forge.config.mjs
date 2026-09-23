@@ -21,6 +21,14 @@ export default {
   adapter: './forge/adapter.mjs',
   scenarios: './forge/scenarios.mjs',
 
+  // что обязано оставаться кликабельным для настоящего игрока: play/shots
+  // проверяют это в конце сценариев и обходом по вьюпортам (см. README)
+  // hittable: {
+  //   selectors: ['#play', '#shop'],
+  //   viewports: ['desktop', 'phoneLandscape', 'phone'],
+  //   setup: [],   // шаги до состояния, где всё это обязано нажиматься
+  // },
+
   // эталонные кадры для арт-критика (скриншоты игр, на которые целимся)
   references: 'forge/references',
 

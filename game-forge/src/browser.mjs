@@ -132,5 +132,8 @@ export async function newPage(browser, vpName = 'desktop') {
     if (res.status() >= 400) errors.push({ kind: 'http', text: `${res.status()} ${res.url()}` });
   });
   page.__forgeErrors = errors;
+  // Настоящий клик на телефоне — касание, а не мышь: игра, слушающая только
+  // touchstart или pointerType, мышиный клик может и не заметить.
+  page.__forgeTouch = !!vp.hasTouch;
   return page;
 }

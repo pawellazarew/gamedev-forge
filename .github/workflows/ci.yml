@@ -24,7 +24,7 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Синтаксис всех модулей
-        run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/*/forge.config.mjs fixtures/tiny-game/forge/*.mjs; do node --check "$f"; done
+        run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/*/forge.config.mjs fixtures/*/forge/*.mjs; do node --check "$f"; done
 
       - name: Синтаксис shell и python
         run: |
@@ -99,6 +99,36 @@ jobs:
           for game in late-canvas dirty-render settling-intro hud-first; do
             node game-forge/bin/forge.mjs probe "fixtures/$game" --seconds 3 --strict
           done
+
+      # DOM-клик проходит сквозь перекрывающий слой, поэтому сценарий на нём
+      # зеленел на неиграбельной игре. Фикстура держит обе половины: свободная
+      # кнопка обязана проходить мышью и касанием, перекрытая — краснеть с
+      # именем перекрывающего слоя.
+      - name: play обязан ловить перекрытую кнопку
+        run: |
+          set +e
+          node game-forge/bin/forge.mjs play fixtures/covered-button
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "::error::play на covered-button вышел с кодом $code вместо 2"
+            exit 1
+          fi
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("fixtures/covered-button/.forge/latest-play/play.json", "utf8"));
+            const st = Object.fromEntries(p.scenarios.map((s) => [s.scenario, s]));
+            for (const n of ["click-ok", "tap-ok", "opted-out"]) {
+              if (st[n]?.status !== "pass") { console.error(`::error::${n} обязан проходить, получили ${st[n]?.status}`); process.exit(1); }
+            }
+            for (const n of ["second-click-covered", "dom-click-hides-it", "hittable@desktop", "hittable@phoneLandscape", "hittable@phone"]) {
+              const bad = st[n]?.checks.find((c) => c.status === "fail");
+              if (!bad || !bad.detail.includes("div#art")) {
+                console.error(`::error::${n} обязан краснеть с именем перекрывающего слоя, получили ${JSON.stringify(bad)}`);
+                process.exit(1);
+              }
+            }
+          '
 
       - name: sim + analyze (детерминированная симуляция)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000

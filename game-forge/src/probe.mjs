@@ -2,6 +2,7 @@ import path from 'node:path';
 import { boot, loadAdapter, loadScenarios } from './harness.mjs';
 import { applyStep } from './scenario.mjs';
 import { resolveViewport } from './browser.mjs';
+import { hittableChecks, hittableFor, hittableSummary } from './hittest.mjs';
 import { frameStats, pixelDiffRatio } from './png.mjs';
 import { runDir, linkLatest, writeJson, mean, median, percentile, filterNoise, color, verdictMark } from './util.mjs';
 
@@ -61,12 +62,18 @@ export async function probe(cfg, opts = {}) {
 
   try {
     let scenePath = null;
+    const extraChecks = [];
     if (sc) {
       // Мерить надо тяжёлую сцену, а не стартовую комнату: `--scenario storm-peak`
       // прогоняет шаги обычного сценария (без съёмки) и только потом включает
       // счётчики. Без этого требование «замерить пик» не автоматизируется.
       await prepareScene(ctx.page, sc, cfg);
       scenePath = sc.name;
+      // Конец сценария — то же место, где его проверяет play. До окна замера:
+      // ожидание освобождения элемента не должно попасть в счётчики кадров.
+      // Перекрытие — находка, а не сорванная сцена: замер продолжается.
+      const sels = hittableFor(sc, cfg);
+      if (sels.length) extraChecks.push(hittableSummary(sels, await hittableChecks(ctx.page, sels)));
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
       //
@@ -171,6 +178,7 @@ export async function probe(cfg, opts = {}) {
       errors: filterNoise(ctx.errors()),
       canvas: canvasStats,
       pixelChange,
+      extraChecks,
     });
 
     writeJson(path.join(dir, 'probe.json'), metrics);
@@ -289,7 +297,7 @@ export async function prepareScene(page, sc, cfg) {
  */
 export function computeMetrics(raw, {
   cfg, viewport, seconds, scenario = null, headless = true,
-  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null,
+  loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null, extraChecks = [],
 }) {
   const budgetMs = cfg.budgets?.frameMs ?? 16.7;
 
@@ -375,7 +383,9 @@ export function computeMetrics(raw, {
     state: raw.state ?? null,
   };
 
-  metrics.checks = evaluateBudgets(metrics, cfg.budgets || {});
+  // extraChecks — проверки не про кадр (кликабельность в конце сценария),
+  // но вердикт у probe один, и красная из них обязана его красить.
+  metrics.checks = [...evaluateBudgets(metrics, cfg.budgets || {}), ...extraChecks];
   metrics.verdict = metrics.checks.some((c) => c.status === 'fail') ? 'fail'
     : metrics.checks.some((c) => c.status === 'warn') ? 'warn' : 'pass';
   return metrics;

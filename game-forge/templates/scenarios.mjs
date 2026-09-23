@@ -1,9 +1,14 @@
 /**
  * Сценарии: что forge проходит и в какие моменты снимает кадры.
- * Ключи шага применяются в порядке: goto → forge → eval → click → move →
- * key → type → tick → wait → waitFor → expect → shot
+ * Ключи шага применяются в порядке: goto → forge → eval → click → realClick →
+ * move → key → type → tick → wait → waitFor → hittable → expect → shot
  *
  * note у кадра — это подсказка критику, что именно на нём должно быть видно.
+ *
+ * Кнопки DOM жать `realClick: '#play'`, а не `eval: "...click()"`: DOM-клик
+ * проходит сквозь любой слой сверху и прячет перекрытый интерфейс.
+ * `hittable: false` у сценария — отказ от проверки кликабельности в конце
+ * (например, сценарий заканчивается на открытой модалке).
  */
 export default [
   {
