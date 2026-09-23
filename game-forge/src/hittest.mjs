@@ -92,16 +92,37 @@ function probeHit(els, opts) {
     }
     return { cs: getComputedStyle(document.body), el: document.body };
   };
-  // Контейнеры, которые обрезают элемент: предки с overflow не visible
+  const atTop = (a) => !a || a === document.body || a === document.documentElement;
+  // Создаёт ли узел containing block для fixed-потомков (и для absolute тоже)
+  const makesCB = (cs) => cs.transform !== 'none' || cs.perspective !== 'none' || cs.filter !== 'none'
+    || (cs.backdropFilter && cs.backdropFilter !== 'none')
+    || /paint|layout|strict|content/.test(cs.contain || '') || /transform|perspective|filter/.test(cs.willChange || '');
+  // Обрезать узел может только его containing block и цепочка выше: fixed-
+  // кнопку не режет overflow центрированного #game, absolute-кнопку —
+  // непозиционированная обёртка. Без этого обе объявлялись «за экраном».
+  const containingBlock = (n) => {
+    const pos = getComputedStyle(n).position;
+    let a = n.parentElement;
+    if (pos === 'fixed') {
+      while (!atTop(a) && !makesCB(getComputedStyle(a))) a = a.parentElement;
+    } else if (pos === 'absolute') {
+      while (!atTop(a)) {
+        const cs = getComputedStyle(a);
+        if (cs.position !== 'static' || makesCB(cs)) break;
+        a = a.parentElement;
+      }
+    }
+    return atTop(a) ? null : a;
+  };
   const clippers = () => {
     const out = [];
-    for (let a = el.parentElement; a && a !== document.body && a !== document.documentElement; a = a.parentElement) {
+    for (let a = containingBlock(el); a; a = containingBlock(a)) {
       const cs = getComputedStyle(a);
       if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push({ a, cs });
     }
     return out;
   };
-  // Видимая часть: сам элемент ∩ обрезающие предки ∩ экран игрока. Центр
+  // Видимая часть: сам элемент ∩ обрезающие контейнеры ∩ экран игрока. Центр
   // берётся по ней: у панели выше экрана или строки в прокручиваемом списке
   // геометрический центр может лежать там, куда игрок не видит.
   const visible = () => {
@@ -117,74 +138,85 @@ function probeHit(els, opts) {
     right = Math.min(right, v.x + v.w); bottom = Math.min(bottom, v.y + v.h);
     return { r, v, box: right > left && bottom > top ? { left, top, right, bottom } : null };
   };
+  // Прокрутка всех контейнеров и страницы с пометкой, какие оси заперты
+  // (overflow: hidden/clip): программно их крутить можно, игроку — нет.
+  const scrollState = () => {
+    const list = clippers().map(({ a, cs }) => ({ a, x: HIDE.test(cs.overflowX), y: HIDE.test(cs.overflowY) }));
+    const se = document.scrollingElement;
+    if (se) {
+      const d = docOverflow();
+      list.push({ a: se, x: HIDE.test(d.cs.overflowX), y: HIDE.test(d.cs.overflowY), owner: d.el });
+    }
+    for (const st of list) { st.left = st.a.scrollLeft; st.top = st.a.scrollTop; }
+    return list;
+  };
 
   let { r, v, box } = visible();
   const w = Math.round(r.width), h = Math.round(r.height);
+  let saved = null, locked = null;
   if (!box && opts.scroll) {
-    // Докручиваем, как докрутил бы игрок. Но программно scrollIntoView
-    // крутит и контейнеры с overflow: hidden, куда игрок не докрутит, —
-    // тогда проверка зеленела бы на уехавшей за край кнопке. Запоминаем
-    // прокрутку запертых контейнеров, и если она сдвинулась, возвращаем её
-    // назад и говорим, кто заперт.
-    const locks = clippers().filter(({ cs }) => HIDE.test(cs.overflowX) || HIDE.test(cs.overflowY))
-      .map(({ a, cs }) => ({ a, x: HIDE.test(cs.overflowX), y: HIDE.test(cs.overflowY) }));
-    const dov = docOverflow();
-    const se = document.scrollingElement;
-    if (se && (HIDE.test(dov.cs.overflowX) || HIDE.test(dov.cs.overflowY))) {
-      locks.push({ a: se, x: HIDE.test(dov.cs.overflowX), y: HIDE.test(dov.cs.overflowY), owner: dov.el });
-    }
-    for (const l of locks) { l.left = l.a.scrollLeft; l.top = l.a.scrollTop; }
-    // instant: при `scroll-behavior: smooth` прокрутка иначе асинхронна,
-    // и проверка смотрела бы на середину анимации
-    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    const moved = locks.find((l) => (l.x && l.a.scrollLeft !== l.left) || (l.y && l.a.scrollTop !== l.top));
-    if (moved) {
-      for (const l of locks) { l.a.scrollLeft = l.left; l.a.scrollTop = l.top; }
-      ({ r, v } = visible());
-      return {
-        ok: false, reason: 'offscreen', w, h, rect: [Math.round(r.left), Math.round(r.top)],
-        vw: Math.round(v.w), vh: Math.round(v.h), locked: describe(moved.owner || moved.a),
-      };
+    // Докручиваем, как докрутил бы игрок. inline: nearest — не трогать
+    // горизонталь, если по ней элемент и так виден: у списка с
+    // overflow-x: hidden лишний сдвиг читался как «заперто» навсегда.
+    // instant: при `scroll-behavior: smooth` прокрутка иначе асинхронна.
+    saved = scrollState();
+    el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    // Откатываем только запертые оси — по свободной игрок докрутил бы сам —
+    // и судим по тому, что осталось видно.
+    for (const st of saved) {
+      if (st.x && st.a.scrollLeft !== st.left) { st.a.scrollLeft = st.left; locked = locked || st; }
+      if (st.y && st.a.scrollTop !== st.top) { st.a.scrollTop = st.top; locked = locked || st; }
     }
     ({ r, v, box } = visible());
   }
-  if (!box) {
-    return { ok: false, reason: 'offscreen', w, h, rect: [Math.round(r.left), Math.round(r.top)], vw: Math.round(v.w), vh: Math.round(v.h) };
-  }
 
-  const x = (box.left + box.right) / 2, y = (box.top + box.bottom) / 2;
-  // Ввод — от угла экрана игрока, а не от лэйаут-вьюпорта
-  const at = { x, y, ix: x - v.x, iy: y - v.y, w, h };
-  const cs = getComputedStyle(el);
-  if (cs.pointerEvents === 'none') return { ok: false, reason: 'no-pointer-events', ...at };
+  const judge = () => {
+    if (!box) {
+      return {
+        ok: false, reason: 'offscreen', w, h, rect: [Math.round(r.left), Math.round(r.top)],
+        vw: Math.round(v.w), vh: Math.round(v.h), locked: locked ? describe(locked.owner || locked.a) : null,
+      };
+    }
+    const x = (box.left + box.right) / 2, y = (box.top + box.bottom) / 2;
+    // Ввод — от угла экрана игрока, а не от лэйаут-вьюпорта
+    const at = { x, y, ix: x - v.x, iy: y - v.y, w, h };
+    if (getComputedStyle(el).pointerEvents === 'none') return { ok: false, reason: 'no-pointer-events', ...at };
 
-  const root = el.getRootNode();
-  const hit = (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y);
-  // Выключенная кнопка лежит сверху и hit-test проходит, но клик по ней
-  // ничего не делает: для перекрытия это не провал, для клика — провал.
-  const disabled = el.matches(':disabled');
-  if (hit && (hit === el || el.contains(hit))) return { ok: true, disabled, ...at };
-  const owner = hit && !hit.id && hit.parentElement ? hit.parentElement.closest('[id]') : null;
-  return {
-    ok: false, reason: 'covered', ...at, disabled,
-    hit: describe(hit),
-    owner: describe(owner),
-    layer: hit ? layerOf(hit) : null,
-    self: layerOf(el),
+    const root = el.getRootNode();
+    const hit = (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y);
+    // Выключенная кнопка лежит сверху и hit-test проходит, но клик по ней
+    // ничего не делает: для перекрытия это не провал, для клика — провал.
+    const disabled = el.matches(':disabled');
+    if (hit && (hit === el || el.contains(hit))) return { ok: true, disabled, ...at };
+    const owner = hit && !hit.id && hit.parentElement ? hit.parentElement.closest('[id]') : null;
+    return {
+      ok: false, reason: 'covered', ...at, disabled,
+      hit: describe(hit),
+      owner: describe(owner),
+      layer: hit ? layerOf(hit) : null,
+      self: layerOf(el),
+    };
   };
+  const res = judge();
+  // Проверка не должна двигать игру: возвращаем прокрутку как была. Для
+  // клика не возвращаем — жать надо туда, куда докрутили. Сдвиг visual
+  // viewport на телефоне вернуть нечем — API для него нет.
+  if (opts.restore && saved) for (const st of saved) { st.a.scrollLeft = st.left; st.a.scrollTop = st.top; }
+  return res;
 }
 
 /**
  * Одна проверка без ожидания: `{ ok, reason, x, y, ix, iy, … }`.
- * scroll: докрутить к элементу, если игрок может это сделать сам.
+ * scroll — докрутить к элементу, если игрок может это сделать сам;
+ * restore — вернуть прокрутку после проверки.
  */
-export async function hitTest(page, selector, { scroll = true } = {}) {
+export async function hitTest(page, selector, { scroll = true, restore = false } = {}) {
   try {
-    return await page.locator(selector).evaluateAll(probeHit, { scroll });
+    return await page.locator(selector).evaluateAll(probeHit, { scroll, restore });
   } catch (err) {
     const msg = String(err?.message || err).split('\n')[0];
     // Опечатка в селекторе — не то же самое, что «элемента нет»
-    if (/selector|parse|Unexpected token/i.test(msg)) return { ok: false, reason: 'bad-selector', error: msg };
+    if (/while parsing|SyntaxError|not a valid|Unknown engine/i.test(msg)) return { ok: false, reason: 'bad-selector', error: msg };
     // Элемент пересоздали посреди проверки — это «не нашли», а не падение прогона
     return { ok: false, reason: 'detached', error: msg };
   }
@@ -193,14 +225,15 @@ export async function hitTest(page, selector, { scroll = true } = {}) {
 /**
  * Проверять, пока все элементы не пройдут `accept` или не выйдет срок.
  * Разовый снимок ловил бы середину затухания модалки; постоянное перекрытие
- * от ожидания не лечится и падает так же, только позже.
+ * от ожидания не лечится и падает так же, только позже. Неверный селектор
+ * ожиданием не лечится вовсе — на нём выходим сразу.
  */
-export async function waitHittable(page, selectors, settleMs = HIT_SETTLE_MS, accept = (r) => r.ok) {
+export async function waitHittable(page, selectors, { settleMs = HIT_SETTLE_MS, accept = (r) => r.ok, restore = false } = {}) {
   const deadline = Date.now() + settleMs;
   for (;;) {
     const results = [];
-    for (const sel of selectors) results.push({ selector: sel, ...(await hitTest(page, sel)) });
-    if (results.every(accept) || Date.now() >= deadline) return results;
+    for (const sel of selectors) results.push({ selector: sel, ...(await hitTest(page, sel, { restore })) });
+    if (results.every(accept) || results.some((r) => r.reason === 'bad-selector') || Date.now() >= deadline) return results;
     await page.waitForTimeout(100);
   }
 }
@@ -240,7 +273,7 @@ export function hitMessage(selector, res) {
 
 /** Бросает с понятным сообщением, если по элементу не попасть. */
 export async function assertHittable(page, selector, { settleMs = HIT_SETTLE_MS } = {}) {
-  const [res] = await waitHittable(page, [selector], settleMs);
+  const [res] = await waitHittable(page, [selector], { settleMs, restore: true });
   if (!res.ok) throw new HitError(hitMessage(selector, res));
   return res;
 }
@@ -251,7 +284,9 @@ export async function assertHittable(page, selector, { settleMs = HIT_SETTLE_MS 
  * не сорванная подготовка сцены.
  */
 export async function hittableChecks(page, selectors, settleMs = HIT_SETTLE_MS) {
-  const results = await waitHittable(page, selectors, settleMs);
+  // restore: проверка в конце сценария или посреди него не двигает игру —
+  // иначе probe мерил бы уже прокрученную сцену
+  const results = await waitHittable(page, selectors, { settleMs, restore: true });
   return results.map((r) => ({
     name: `кликабелен «${r.selector}»`,
     status: r.ok ? 'pass' : 'fail',
@@ -283,10 +318,11 @@ export async function realClick(page, selector, { timeout = WAIT_VISIBLE_MS, tim
   const touch = !!page.__forgeTouch;
   let last = null;
   for (let n = 1; n <= times; n++) {
-    const [res] = await waitHittable(page, [selector], timeout, (r) => r.ok && !r.disabled);
+    const [res] = await waitHittable(page, [selector], { settleMs: timeout, accept: (r) => r.ok && !r.disabled });
     if (!res.ok || res.disabled) {
       const why = hitMessage(selector, res.ok ? { reason: 'disabled' } : res);
-      throw new HitError(`${why} — ждали ${timeout} мс${times > 1 ? ` (клик ${n} из ${times})` : ''}`);
+      const waited = res.reason === 'bad-selector' ? '' : ` — ждали ${timeout} мс`;
+      throw new HitError(`${why}${waited}${times > 1 ? ` (клик ${n} из ${times})` : ''}`);
     }
     if (touch) await page.touchscreen.tap(res.ix, res.iy);
     else await page.mouse.click(res.ix, res.iy);

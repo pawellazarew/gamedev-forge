@@ -70,6 +70,13 @@ export async function probe(cfg, opts = {}) {
       // Перекрытие на шагах сцены — находка, а не сорванная подготовка.
       hitChecks = (await prepareScene(ctx.page, sc, cfg)).filter((c) => c.kind === 'hittable');
       scenePath = sc.name;
+      // Кликабельность в конце сцены — там же, где её проверяет play: после
+      // окна за 8 секунд игры успели бы всплыть конец раунда или реклама, и
+      // вердикты probe и play по одному сценарию разошлись бы. До окна
+      // проверка ничего не портит: прокрутку она возвращает, а её ожидание
+      // заканчивается раньше, чем обнулятся счётчики кадров.
+      const sels = hittableFor(sc, cfg);
+      if (sels.length) hitChecks.push(...await hittableChecks(ctx.page, sels, settleOf(cfg)));
     } else if (adapter?.autostart !== false) {
       // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
       //
@@ -167,12 +174,7 @@ export async function probe(cfg, opts = {}) {
       canvasStats = frameStats(after);
     } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
 
-    // Кликабельность в конце сцены — там же, где её проверяет play, но ПОСЛЕ
-    // окна: проверка ждёт освобождения элементов и может докрутить к ним,
-    // как игрок, и ни то ни другое не должно попасть в замер. Перекрытие —
-    // находка, а не сорванная сцена: числа замера остаются в силе.
-    const sels = sc ? hittableFor(sc, cfg) : [];
-    if (sels.length) hitChecks.push(...await hittableChecks(ctx.page, sels, settleOf(cfg)));
+    // Перекрытие — находка, а не сорванная сцена: числа замера остаются в силе
     const extraChecks = hitChecks.length ? [hittableSummary(hitChecks)] : [];
 
     const metrics = computeMetrics(raw, {

@@ -207,6 +207,31 @@ describe('кликабельность: достижимость', opts, () => {
     assert.match(failOf('page-locked').detail, /«#below» за экраном игрока.*overflow: hidden у body/);
   });
 
+  test('список с запертой горизонталью, fixed- и absolute-кнопки не объявляются «за экраном»', () => {
+    // Второй круг ревью: inline: center двигал запертую ось списка магазина,
+    // а обрезка считалась по всем предкам, а не по containing block. Клики по
+    // #buy, #full и #abs сверяет expect сценариев reach-*; здесь — что
+    // проверка без клика вернула прокрутку.
+    for (const n of ['reach-phone', 'reach-desktop']) {
+      const back = byName(n).checks.find((c) => c.name === 'проверка не сдвинула прокрутку');
+      assert.equal(back?.status, 'pass', `${n}: ${JSON.stringify(back)}`);
+    }
+  });
+
+  test('неверный селектор — сразу и с причиной, а не таймаут с «пропал из документа»', () => {
+    const f = failOf('bad-selector');
+    assert.match(f.detail, /«div\[» — неверный селектор/);
+    assert.doesNotMatch(f.detail, /ждали/, 'ожиданием опечатка не лечится — ждать нечего');
+  });
+
+  test('probe судит кликабельность там же, где play, а не после окна замера', async () => {
+    // Кнопку накрывают через 2,5 с после конца сценария. play её видит
+    // свободной; probe после трёхсекундного окна видел бы перекрытой.
+    assert.equal(byName('late-cover').status, 'pass');
+    const { metrics } = await probe(reachCfg, { seconds: 3, scenario: 'late-cover' });
+    assert.equal(metrics.checks.find((c) => c.name === 'hittable').status, 'pass');
+  });
+
   test('проваленный шаг hittable в probe — находка, а не сорванная сцена', async () => {
     const { metrics } = await probe(reachCfg, { seconds: 1, scenario: 'locked' });
     const hit = metrics.checks.find((c) => c.name === 'hittable');

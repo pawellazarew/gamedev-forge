@@ -12,7 +12,14 @@ const reachable = (vp) => ({
     { realClick: '#inlist' },
     { realClick: '#below' },
     { realClick: '#late' },
-    { expect: { fn: () => ['pan', 'inlist', 'below', 'late'].every((id) => window.clicks[id] === 1), msg: 'каждый клик дошёл до своей кнопки' } },
+    { realClick: '#buy' },
+    { realClick: '#full' },
+    { realClick: '#abs' },
+    { expect: { fn: () => ['pan', 'inlist', 'below', 'late', 'buy', 'full', 'abs'].every((id) => window.clicks[id] === 1), msg: 'каждый клик дошёл до своей кнопки' } },
+    // Проверка без клика — после неё прокрутка возвращается как была
+    { eval: 'window.scrollTo(0, 0); document.getElementById("shop").scrollTop = 0' },
+    { hittable: ['#buy', '#below'], timeout: 0 },
+    { expect: { fn: () => window.scrollY === 0 && document.getElementById('shop').scrollTop === 0, msg: 'проверка не сдвинула прокрутку' } },
   ],
 });
 
@@ -37,4 +44,12 @@ export default [
     steps: [{ eval: "document.body.style.overflow = 'hidden'; window.scrollTo(0, 0)" }, { hittable: '#below' }],
   },
   { name: 'dead', viewport: 'desktop', steps: [{ realClick: '#dead', timeout: 800 }] },
+  { name: 'bad-selector', viewport: 'desktop', steps: [{ realClick: 'div[' }] },
+  {
+    name: 'late-cover',
+    viewport: 'desktop',
+    note: 'В конце сценария кнопка свободна; накроют её позже — probe обязан судить там же, где play',
+    hittable: ['#later'],
+    steps: [{ eval: 'window.coverLaterIn(2500)' }],
+  },
 ];

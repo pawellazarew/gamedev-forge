@@ -18,6 +18,23 @@
   #locked div { height: 60px; }
   #pulse { animation: pulse 1s infinite; }
   @keyframes pulse { 50% { transform: scale(1.15); } }
+  /* Типичный список магазина: по горизонтали заперт, по вертикали листается,
+     а содержимое чуть шире — лишний сдвиг по запертой оси не повод краснеть */
+  #shop { width: 220px; height: 120px; overflow-x: hidden; overflow-y: auto; border: 1px solid #567; }
+  #shop .row { width: 240px; height: 60px; text-align: right; }
+  /* fixed-кнопка внутри центрированной сцены с overflow: hidden — сцена её
+     не режет, containing block у неё экран */
+  #game { position: relative; overflow: hidden; width: 300px; height: 60px; margin: 0 auto; background: #203040; }
+  #full { position: fixed; right: 10px; top: 10px; z-index: 5; }
+  /* absolute-кнопка в непозиционированной обёртке с overflow: hidden: режет
+     её только позиционированный #stage */
+  #stage { position: relative; height: 80px; }
+  #wrap { overflow: hidden; height: 20px; }
+  #abs { position: absolute; left: 10px; top: 40px; }
+  /* Позднее перекрытие: накрывает #later через 2,5 с после вызова */
+  #lateBox { position: relative; display: inline-block; }
+  #lateBox .veil { position: absolute; inset: 0; z-index: 2; display: none; }
+  #lateBox .veil.on { display: block; }
   #tall { height: 1800px; }
 </style>
 </head>
@@ -29,16 +46,21 @@
 <button id="late" disabled>включится</button>
 <button id="dead" disabled>выключена навсегда</button>
 <button id="pulse">пульс</button>
+<div id="shop"><div class="row">1</div><div class="row">2</div><div class="row">3</div><div class="row"><button id="buy">купить</button></div></div>
+<div id="game"><button id="full">во весь экран</button></div>
+<div id="stage"><div id="wrap"><button id="abs">на сцене</button></div></div>
+<span id="lateBox"><button id="later">позже накроют</button><span class="veil"></span></span>
 <div id="tall"></div>
 <button id="below">ниже экрана</button>
 <script>
-  // Кнопки достижимы игроком, кроме #inlocked (заперта overflow: hidden) и
-  // #dead (disabled). Счётчики показывают, дошёл ли настоящий клик.
+  // Кнопки достижимы игроком, кроме #inlocked (заперта overflow: hidden),
+  // #dead (disabled) и #later после coverLaterIn(). Счётчики показывают, дошёл ли настоящий клик.
   window.clicks = {};
   for (const b of document.querySelectorAll('button')) {
     b.addEventListener('click', () => { window.clicks[b.id] = (window.clicks[b.id] || 0) + 1; });
   }
   setTimeout(() => { document.getElementById('late').disabled = false; }, 600);
+  window.coverLaterIn = (ms) => setTimeout(() => document.querySelector('#lateBox .veil').classList.add('on'), ms);
 </script>
 </body>
 </html>
