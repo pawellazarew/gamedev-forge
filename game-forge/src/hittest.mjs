@@ -229,9 +229,16 @@ function probeHit(els, opts) {
     for (const st of saved) { st.a.scrollLeft = st.left; st.a.scrollTop = st.top; }
     // Прокрутка туда и обратно всё равно шлёт scroll/scrollend на следующем
     // кадре, и игра, закрывающая попап по прокрутке, менялась бы от чистой
-    // проверки. Глушим их на перехвате у window, пока они не пройдут.
+    // проверки. Глушим на перехвате у window только события тех контейнеров,
+    // что мы вернули, и только если к моменту доставки они стоят там же:
+    // настоящая прокрутка следующего шага сливается в то же событие, но
+    // сдвигает контейнер — и проходит к игре.
     if (changed) {
-      const stop = (e) => e.stopImmediatePropagation();
+      const stop = (e) => {
+        const t = e.target === document ? document.scrollingElement : e.target;
+        const st = saved.find((x) => x.a === t);
+        if (st && t.scrollLeft === st.left && t.scrollTop === st.top) e.stopImmediatePropagation();
+      };
       for (const t of ['scroll', 'scrollend']) window.addEventListener(t, stop, true);
       setTimeout(() => { for (const t of ['scroll', 'scrollend']) window.removeEventListener(t, stop, true); }, 100);
     }

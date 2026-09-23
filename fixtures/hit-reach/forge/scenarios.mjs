@@ -79,8 +79,17 @@ export default [
           width: b.width + 'px', height: b.height + 'px', zIndex: 9 });
         v.id = 'cover'; document.body.appendChild(v); window.scrollTo(0, 0);` },
       { hittable: '#below', timeout: 0 },
-      { expect: { fn: () => window.scrollY > 0, msg: 'после провала страница докручена к перекрытию' } },
+      // Посреди сценария провал прокрутку не оставляет: дальше идут шаги
+      { expect: { fn: () => window.scrollY === 0, msg: 'после провала посреди сценария прокрутка на месте' } },
+      // Следующий шаг листает тот же список, что проверка крутила туда и
+      // обратно, — его прокрутка обязана дойти до игры
+      { eval: 'document.getElementById("list").scrollTop = 0; window.scrolls = 0' },
+      { hittable: '#inlist', timeout: 0 },
+      { eval: 'document.getElementById("list").scrollTop = 40', wait: 300 },
+      { expect: { fn: () => window.scrolls >= 1, msg: 'настоящая прокрутка после проверки дошла до игры' } },
     ],
+    // В конце сценария — докрутка к перекрытию для кадра провала
+    hittable: ['#below'],
   },
   { name: 'bad-selector', viewport: 'desktop', steps: [{ realClick: 'div[' }] },
   {

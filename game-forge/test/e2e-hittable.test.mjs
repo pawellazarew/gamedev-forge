@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from '../src/harness.mjs';
+import { loadConfig, boot } from '../src/harness.mjs';
+import { hittableChecks } from '../src/hittest.mjs';
 import { probe } from '../src/probe.mjs';
 import { runScenarios } from '../src/scenario.mjs';
 import { findChromium } from '../src/browser.mjs';
@@ -235,11 +236,36 @@ describe('кликабельность: достижимость', opts, () => {
     assert.equal(byName('quiet-check').status, 'pass', JSON.stringify(failOf('quiet-check')));
   });
 
-  test('кадр провала снят там, где перекрытие видно', () => {
+  test('провал посреди сценария прокрутку не оставляет, а прокрутка следующего шага доходит до игры', () => {
     const sc = byName('fail-shot-scrolled');
     assert.match(failOf('fail-shot-scrolled').detail, /«#below» перекрыт.*div#cover/);
-    assert.equal(sc.checks.find((c) => /докручена к перекрытию/.test(c.name)).status, 'pass');
-    assert.ok(sc.shots.some((s) => s.label.startsWith('hittable')), 'кадр провала есть');
+    for (const msg of ['после провала посреди сценария прокрутка на месте', 'настоящая прокрутка после проверки дошла до игры']) {
+      assert.equal(sc.checks.find((c) => c.name === msg)?.status, 'pass', msg);
+    }
+    assert.ok(sc.shots.some((s) => s.label === 'hittable'), 'кадр провала в конце сценария есть');
+  });
+
+  test('keepOnFail докручивает к перекрытию только по просьбе', async () => {
+    // Кадр провала в конце сценария должен показывать перекрытие там, куда
+    // указывают координаты сообщения; посреди сценария прокрутка остаётся
+    const ctx = await boot(reachCfg, { viewport: 'desktop' });
+    try {
+      await ctx.page.evaluate(() => {
+        const b = document.getElementById('below').getBoundingClientRect();
+        const v = document.createElement('div');
+        Object.assign(v.style, { position: 'absolute', left: `${b.left}px`, top: `${b.top + scrollY}px`,
+          width: `${b.width}px`, height: `${b.height}px`, zIndex: 9 });
+        document.body.appendChild(v);
+        window.scrollTo(0, 0);
+      });
+      const plain = await hittableChecks(ctx.page, ['#below'], 0);
+      assert.equal(plain[0].status, 'fail');
+      assert.equal(await ctx.page.evaluate(() => window.scrollY), 0, 'без просьбы прокрутка на месте');
+      await hittableChecks(ctx.page, ['#below'], 0, { keepOnFail: true });
+      assert.ok(await ctx.page.evaluate(() => window.scrollY) > 0, 'с keepOnFail страница докручена к перекрытию');
+    } finally {
+      await ctx.dispose();
+    }
   });
 
   test('неверный селектор — сразу и с причиной, а не таймаут с «пропал из документа»', () => {

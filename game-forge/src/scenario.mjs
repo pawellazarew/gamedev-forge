@@ -52,6 +52,8 @@ export async function runScenarios(cfg, opts = {}) {
       // игра стоит посреди действия, и перекрытие там ничего не доказывает.
       const sels = hittableFor(sc, cfg);
       if (sels.length) {
+        // keepOnFail: сценарий закончился, и кадр провала должен показать
+        // перекрытие там, куда указывают координаты сообщения
         const hit = await hittableChecks(ctx.page, sels, settleOf(cfg), { keepOnFail: true });
         checks.push(...hit);
         const failed = hit.find((c) => c.status === 'fail');
@@ -171,7 +173,9 @@ export async function applyStep(page, step, ctx) {
   // При необходимости докручивает к элементу — как сделал бы игрок.
   if (step.hittable) {
     const sels = Array.isArray(step.hittable) ? step.hittable : [step.hittable];
-    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg), { keepOnFail: !ctx.skipShots });
+    // Прокрутку не оставляем даже на провале: дальше идут шаги, и в play они
+    // шли бы по прокрученной странице, а в probe — по исходной
+    const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg));
     checks.push(...hit);
     const failed = hit.find((c) => c.status === 'fail');
     if (failed && !ctx.skipShots) await failShot(page, sc, shotsDir, shots, failed.detail, i);
