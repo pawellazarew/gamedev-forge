@@ -1,257 +1,103 @@
 # game-forge
 
-Конвейер автономной разработки веб-игр: агент запускает игру, играет в неё
-ботами, снимает и **смотрит** кадры, меряет производительность, читает баланс
-по сотням прогонов и складывает всё в один HTML-отчёт.
+A local CLI for browser game checks, screenshots, scripted play and balance
+simulations. No AI account is required. See the [repository quick start](../README.md).
 
-Смысл — замкнуть петлю обратной связи. Без неё агент правит игру вслепую:
-пишет код, который «должен работать», и не видит ни кадра, ни цифры.
+## Install
 
-## Установка
+Requires Node.js 22+ on macOS or Linux.
 
 ```bash
-cd tools/game-forge
-npm install
+cd game-forge
+npm ci
+npx playwright-core install chromium
 node bin/forge.mjs doctor
 ```
 
-Браузер берётся из общего кеша Playwright (`npx playwright install chromium`,
-если doctor ругается). Своей копии Chromium конвейер не качает.
+For Linux system libraries: `npx playwright-core install --with-deps chromium`.
+This repository is installed from source; these instructions do not assume an npm
+registry release.
 
-## Команды
+## Commands
+
+Run these from `game-forge/`, replacing `<game>` with a game directory:
 
 ```bash
-node bin/forge.mjs init  <игра>              # forge.config.mjs + заготовки
-node bin/forge.mjs probe <игра> [--seconds 8] [--viewport phone] [--headed] [--scenario storm-peak]
-node bin/forge.mjs shots <игра> [--only first-run]
-node bin/forge.mjs play  <игра>              # + ассерты, ненулевой код при провале
-node bin/forge.mjs sim   <игра> --runs 40 --max-ticks 150000
-node bin/forge.mjs analyze <игра>
-node bin/forge.mjs report  <игра>
-node bin/forge.mjs critique <игра>           # бриф для агента-критика
-node bin/forge.mjs all <игра>
+node bin/forge.mjs init <game>
+node bin/forge.mjs probe <game> --seconds 8 --strict
+node bin/forge.mjs probe <game> --scenario storm-peak --headed
+node bin/forge.mjs shots <game> --only first-run
+node bin/forge.mjs play <game>
+node bin/forge.mjs sim <game> --runs 40 --max-ticks 150000
+node bin/forge.mjs analyze <game>
+node bin/forge.mjs report <game>
+node bin/forge.mjs critique <game>
+node bin/forge.mjs all <game> --runs 40
 ```
 
-Артефакты: `<игра>/.forge/<команда>-<метка>/` плюс симлинки `latest-*`.
+| Command | Purpose |
+| --- | --- |
+| `doctor` | Locate Chromium and check the runtime |
+| `init` | Generate configuration, scenarios and an adapter template |
+| `probe` | Measure frame work, load size/time, rendering activity and errors |
+| `shots` | Capture configured scenarios |
+| `play` | Run scenarios and fail on failed checks |
+| `sim` | Run adapter-driven bots and analyze balance |
+| `analyze` | Recompute analysis from simulation results |
+| `report` | Build an HTML report from latest artifacts |
+| `critique` | Generate a brief for a human or agent reviewer |
+| `all` | Run probe, shots, simulation, analysis and report |
 
-## Кликабельность: попадёт ли игрок по кнопке
+`all` captures scenarios through `shots` and enforces their verdict along with
+probe and balance checks.
+Exit codes are `0` for success, `1` for execution/configuration errors, and `2`
+for failed checks (`probe` requires `--strict` to enforce its verdict).
 
-DOM-клик (`el.click()`, `__game.clickCode()`) проходит сквозь любой слой сверху,
-поэтому сценарий на нём зеленеет на игре, где не нажимается ни одна кнопка:
-так bum2billionaire прошёл `play` 15/15 с `#art { z-index: 3 }` поверх магазина.
-Против этого два инструмента:
+Artifacts live in `<game>/.forge/<command>-<timestamp>/` with `latest-*` symlinks.
+Ignore generated artifacts in your game's version control.
 
-- **Шаг `realClick: '#code'`** (плюс `times: 12`) — клик как у игрока: центр
-  видимой части элемента (обрезанной контейнерами и экраном игрока — на
-  телефоне это visual viewport, а не `innerWidth`), `elementFromPoint`, и только
-  если сверху сам элемент и он не `disabled` — настоящий `page.mouse.click`, на
-  вьюпортах с тачем — `page.touchscreen.tap`. Каждый клик проверяется заново;
-  ждёт до 5 с (`timeout` шага), пока элемент появится, освободится и включится.
-  Докручивает туда, куда докрутил бы игрок, но не сквозь `overflow: hidden`
-  (в том числе `html, body { overflow: hidden }` полноэкранной игры); обрезку
-  считает по containing block и сквозь shadow DOM. Проверка без клика
-  возвращает прокрутку и глушит порождённые ею события `scroll`.
-  `click: '<селектор>'` идёт тем же путём, а шаг `hittable: ['#a', '#b']`
-  проверяет без клика. Провал называет перекрывающий элемент и его слой:
-  `«#go» перекрыт: … сверху div.hero внутри div#art (слой div#art, z-index 3)` —
-  и снимает кадр страницы. Селектор берёт первый **видимый** элемент; несколько
-  одинаковых кнопок перечисляй по отдельности (`.buy >> nth=1`).
-- **`hittable` в конфиге** — что обязано оставаться кликабельным:
+## Configuration and scenarios
 
-  ```js
-  hittable: {
-    selectors: ['#code', '#tabs', '#shop'],
-    viewports: ['desktop', 'phoneLandscape', 'phone'],   // по умолчанию эти три
-    setup: [{ eval: "localStorage.setItem('tut','1'); location.reload()", wait: 900 }],
-    settleMs: 1000,   // сколько ждать, пока элементы освободятся
-  },
-  // или коротко: hittable: ['#code', '#shop']
-  ```
+The [configuration template](templates/forge.config.mjs) documents defaults.
+Point `root` at the built/static game, set `entry`, and choose `viewport`.
+`renderer: 'webgl'` enables the headless software WebGL path; `--headed` uses
+the normal graphics path. Set `renderMode: 'on-demand'` for event-driven games.
 
-  `play`/`shots` проверяют селекторы в конце каждого сценария (сценарий с модалкой
-  в конце пишет `hittable: false` или свой список) и добавляют обход
-  `hittable@<вьюпорт>`: игра поднимается заново, выполняет `setup`, проверяется.
-  `probe --scenario` проверяет там же, где play, — в конце сцены, до окна
-  замера (проверка возвращает прокрутку как была), отдельной проверкой
-  `hittable`; перекрытие не срывает замер. Без сценария не проверяет. Выключенная
-  кнопка для этих проверок не провал (это состояние игры, а не вёрстка) — для
-  клика провал. Фикстуры держат обе половины: `covered-button` — перекрытая
-  кнопка краснеет, свободная проходит мышью и касанием; `hit-reach` — широкая
-  страница на телефоне, список с прокруткой и кнопка ниже экрана проходят,
-  `overflow: hidden` и `disabled` краснеют с причиной.
+[Scenario examples](../fixtures/tiny-game/forge/scenarios.mjs) show input,
+assertions and screenshot steps. Use `realClick` or `click` to test physical
+pointer reachability, and `hittable` to detect controls blocked by overlays.
+Programmatic DOM clicks can bypass those overlays.
 
-## Что меряется и почему именно так
+For simulations, implement the [adapter contract](adapters/ADAPTER.md).
+Keep logic deterministic, with a fixed step and rendering separated from logic.
+The bundled [tiny-game](../fixtures/tiny-game/) is the runnable reference.
 
-**Работа внутри кадра, а не интервал между кадрами.** Интервал при живом vsync
-равен периоду дисплея (8.33 мс на 120 Гц) независимо от того, сколько сделала
-игра — «стоимость кадра» из него была фикцией и прыгала между прогонами.
-Сейчас forge оборачивает каждый rAF-колбэк и меряет его длительность:
-Brick Breaker — 0.19–0.21 мс, главный поток занят на 3%, повторяемо между
-прогонами. Каденс печатается отдельной строкой как справочный.
+## What is measured
 
-**Чего эта метрика не видит:** время GPU. Она про главный поток (JS: логика +
-вызовы отрисовки). Для 2D-canvas и Phaser это основной расход, для тяжёлого
-WebGL — нет. Что с этим делать:
+Frame work is time spent inside game `requestAnimationFrame` callbacks on the
+main thread. It excludes GPU work and main-thread work outside those callbacks.
+Frame cadence, stalls and draw-call budgets provide additional signals.
 
-- задать бюджет `drawCalls` в конфиге — единственный прокси GPU-нагрузки,
-  который конвейер снимает сам. Считается **покадрово**, гейт смотрит на
-  **максимум**: среднее прячет тяжёлый кадр (600 вызовов при среднем 7),
-  а p99 теряет единственный пик среди сотни кадров — хотя игрок увидит
-  именно этот фриз;
-- проверять `probe --headed`: в headed софтверный WebGL отключается и замер
-  идёт через настоящий GPU;
-- для релиза — Chrome Performance trace на целевой машине.
+Render checks combine drawing commands and pixel changes to catch a dead canvas.
+They have limits: a quiet title screen and a stalled game may look identical.
+A pass is evidence about configured checks, not a complete quality verdict.
 
-**Софтверный WebGL — только для 3D и только в headless.** Флаг
-`--use-angle=swiftshader` спасает WebGL-игру от чёрного кадра в headless, но
-2D-canvas рубит в 12 раз. Включается при `renderer: 'webgl'` И `headless`:
-в `--headed` он отобрал бы ровно то, ради чего headed запускают — настоящий GPU.
+Simulation reports include confidence intervals and flags such as `wall`,
+`spike`, `timeout` and `bot-suspect`. Validate bot behavior before changing the
+game's balance based on these results.
 
-**«Живой ли кадр».** Число различимых цветов и разброс яркости в канвасе —
-дешёвая защита от ситуации «все метрики зелёные, а на экране чёрный прямоугольник».
+[Detailed notes and examples in Russian](README.ru.md) explain hit testing,
+render checks, metrics, balance flags and known limits.
 
-**Замер, которого не было, — не «зелёно», а красно.** Проверка `sample` идёт
-первой и считает **кадры игры**, а не кадры пробы: `tickProbe` крутит свой
-`requestAnimationFrame` и насчитает полсотни кадров странице, которая нарисовала
-один раз и умерла. Ноль кадров игры, пустые замеры работы или нулевое окно
-(`--seconds 0` отвергается ещё до запуска браузера) — провал, потому что ноль
-миллисекунд работы укладывается в любой бюджет.
+## Tests
 
-**Живой цикл — ещё не живой рендер.** `requestAnimationFrame(loop)` с пустым
-телом даёт полный поток кадров игры на застывшей картинке, поэтому проверка
-`render` считает кадры, в которых игра **выдавала команды рисования** (2D-канвас
-или WebGL). Кадр засчитывается при двух условиях: команда пришла **изнутри
-колбэка игры** и адресована **тому самому канвасу**, который probe снимает
-скриншотом. Иначе за мёртвый игровой канвас ручаются закадровый бэкбуфер
-(потерянный `blit` — фикстура `ghost-backbuffer`), соседний канвас с
-индикатором или рисующий `setInterval` (`outside-loop`).
+```bash
+npm run test:unit
+npm run test:e2e
+npm test
+```
 
-Игровой канвас — это `canvasSelector` из конфига, иначе **самый большой
-видимый**: полоска счёта или прелоадер, объявленные раньше игрового канваса,
-забирали бы на себя весь замер (`hud-first`). Элемент разрешается один раз в
-Node и отдаётся странице целиком, поэтому счёт отрисовки и сравнение пикселей
-не могут разойтись между собой.
+Browser tests require Chromium. Run trusted projects only: configs and adapters
+are executable JavaScript, and the local server is not a production host.
 
-Гейт смотрит на **долю** перерисованных кадров, а не на их число: пять кадров
-из семисот — это умерший на второй секунде рендер, а с абсолютным порогом
-проверка слабела бы с ростом `--seconds`.
-
-Одних команд для приговора мало: игра может рисовать мимо них — из воркера,
-через WebGPU или средствами DOM/CSS. Поэтому вторым сигналом идёт доля
-изменившихся пикселей **игрового канваса** (не страницы: моргающий счётчик в
-DOM рядом с игрой — это не «игра жива»). Замерено: у застывших фикстур ровно 0,
-у живых от 0.0006 (Phaser 3 на спокойной сцене) до 0.026 — порог стоит в
-пустоте между ними. «Рисует каждый кадр, а пиксели не двигаются» — только
-пометка в тексте проверки: так выглядит и «game over», и пауза, и спокойная
-сцена, а жёлтый на каждом экране окончания быстро перестают читать. Потерянный
-`blit` ловится не этим, а тем, что отрисовки на игровом канвасе нет вовсе.
-
-Доли кадров мало: «рисует редко» и «рисовал и умер» дают одинаковую долю.
-Различает их **хвост окна** — когда была последняя отрисовка. Рендер, вставший
-за четверть окна до конца, валит прогон, даже если успел перерисовать
-62% кадров (фикстура `dying-render`).
-
-Но валит только тогда, когда игра до этого рисовала **полноценно** (больше
-половины кадров). Экран, который доиграл анимацию и замер в ожидании ввода —
-титул, пауза, победа, — снаружи выглядит точно так же, как умерший рендер, и
-отличить их без синтетического ввода нечем (`settling-intro`). Красный там
-блокировал бы здоровую игру, поэтому предупреждение. Известный предел:
-рендер, умерший на пятом кадре, тоже даёт предупреждение, а не провал.
-
-**`renderMode: 'on-demand'`** в конфиге — для игр, которые рисуют только по
-событию (пошаговые, Wordle-подобные). Такая игра может не заводить
-`requestAnimationFrame` вовсе: кадров игры у неё ноль по определению, стоимость
-кадра не измерена, и это не поломка. Без этого признака гейт красил бы здоровую
-игру красным (фикстура `dirty-render`). Нулевое окно замера остаётся провалом и
-здесь: «рисует по событию» не оправдывает `--seconds 0`.
-
-**Чего нет — о том молчим.** Если кадров не было, `frame-work`, `frame-spikes`
-и `draw-calls` не печатаются вовсе — ни в проверках, ни в отчёте. Ноль
-миллисекунд работы укладывается в любой бюджет, и частокол зелёных проверок под
-красным `sample` читается как «почти всё хорошо». Вес, время загрузки, ошибки
-консоли, «живой ли кадр» и `stalls` от кадров игры не зависят и считаются
-всегда: подвисания меряются по кадрам ПРОБЫ, и выключать их было бы особенно
-неправильно — работу вне `rAF` больше ловить нечем.
-
-**Гейт проверяется с обеих сторон.** Зелёный probe на здоровой игре ничего не
-значит, пока не показано, что сломанную он валит, — а красный на здоровой
-блокирует работу так же надёжно, как зелёный на сломанной её пропускает. В CI
-стоят обе половины:
-
-| обязаны краснеть | обязаны проходить |
-|---|---|
-| `dead-game` — цикла нет | `late-canvas` — канвас после заставки |
-| `zombie-game` — цикл есть, отрисовки нет | `dirty-render` — рисует по вводу, rAF нет |
-| `ghost-backbuffer` — рисует в закадровый буфер | `settling-intro` — доиграл и ждёт ввода |
-| `dying-render` — рисовал и встал | `hud-first` — индикатор раньше игры в DOM |
-
-Негативная половина требует именно код 2, красную проверку с ожидаемым именем
-**и** ожидаемую фразу в тексте: «любой ненулевой код» означал бы, что опечатка
-в пути к фикстуре читается как «сработало», а без сверки текста фикстура могла
-бы краснеть по другой причине, чем задумано.
-
-**Гейт по длинным кадрам, а не по кадрам в секунду.** Каденс в headless упирается
-в потолок браузера (30 кадр/с на обеих фикстурах, 120 на другой странице) — гейт
-по нему мерил бы харнесс. Доля кадров дольше 50 мс от этого потолка не зависит и
-ловит работу **вне** `rAF`: блокирующий `setInterval` не попадает ни в
-`frameWorkMs`, ни в «занято внутри rAF», но растягивает интервал между кадрами.
-Отсюда же честная формулировка «внутри rAF занято N%»: это не весь главный поток.
-
-**Симуляция без рендера.** Логика крутится внутри страницы одним `evaluate`,
-рендер отключён: ~1 000 000 игровых кадров в секунду, то есть ×15 000 к
-реальному времени. 60 полных прохождений Brick Breaker — 6 секунд.
-
-**Замер идёт там, где тяжело.** `probe --scenario storm-peak` прогоняет шаги
-обычного сценария (без съёмки кадров) и только потом включает счётчики —
-иначе двадцать секунд замера пройдут в стартовой комнате, а требование
-«померить пик» останется на совести человека. Проваленный `expect` на этих
-шагах отменяет замер целиком: неподготовленная сцена даёт зелёные числа именно
-потому, что измеряет не то. Вьюпорт берётся в порядке
-`--viewport` → вьюпорт сценария → вьюпорт конфига (сцена `phone`, снятая
-в десктопном окне, — это другая сцена), одинаково для `probe` и `shots`/`play`.
-
-**Доверительные интервалы.** `winrate 60% (30–85%)` на 10 прогонах — это «не
-знаем». Интервал Уилсона печатается всегда, чтобы шум не выдавали за вывод.
-
-## Флаги баланса
-
-| Флаг | Что значит |
-|---|---|
-| `wall` | проходимость ≤25% — игрок упрётся |
-| `spike` | резкий скачок сложности между соседними уровнями |
-| `flat-curve` | много уровней с проходимостью ≥95% — сложность не растёт |
-| `skill-flat` | новичок и ветеран играют одинаково — навык не решает |
-| `skill-cliff` | пропасть между ними — новичок гарантированно уходит |
-| `bot-suspect` | ветеран играет хуже казуала — **сначала чини бота**, цифры недостоверны |
-| `timeout` | прогоны упираются в лимит кадров — партия бесконечна |
-
-`wall` означает «здесь встал бот». Прежде чем считать это дефектом игры, сделай
-абляцию — политику, заточенную ровно под эту стадию (проверено на REBOOT: «стена»
-оказалась тем, что бот не крафтил два из трёх нужных ресурсов).
-
-Знаменатель проходимости — это входы на уровень (`level_start`), а не смерти:
-в аркаде их три за уровень, и складывать их с прохождениями значит занижать
-проходимость. Провал уровня адаптер объявляет отдельным событием `level_fail`.
-
-## Подключение игры
-
-1. `node bin/forge.mjs init games-business/моя-игра`
-2. `forge.config.mjs`: `root`, `entry`, `viewport`, для 3D — `renderer: 'webgl'`.
-3. `forge/scenarios.mjs`: минимум `first-run` и `phone`.
-4. `forge/adapter.mjs` — по `adapters/ADAPTER.md`. Нужен только для `sim`.
-
-Рабочий пример на живой игре: `games-business/brick-breaker/forge/`.
-
-Требования к игре для симуляции: фиксированный шаг логики, рендер отделён от
-логики, никакого `Date.now()`/`setTimeout` в игровой механике.
-
-## Ограничения
-
-- Меряет проходимость, а не удовольствие. Бот не скучает и не бросает игру.
-- `frameWorkMs` — главный поток, без времени GPU. Тяжёлый WebGL так не поймать.
-- Headless-замер — про запас, не про плавность на конкретном телефоне.
-- Пиксельного сравнения кадров нет: визуал оценивает агент-критик, глядя на PNG.
-- Симлинки за пределы корня игры сервер не отдаёт (проверяется `realpath`),
-  но раздача рассчитана на локальный прогон, а не на публичный хостинг.
-- Вердикт отчёта — худший из probe / сценариев / баланса; зелёного при красном
-  probe быть не может, но «зелёный» всё равно значит «не нашли», а не «хорошо».
+[MIT license](../LICENSE).

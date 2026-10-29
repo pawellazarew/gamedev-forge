@@ -20,6 +20,7 @@ const EXEC_PATTERNS = [
   ['chromium-', 'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium'],
   ['chromium-', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium'],
   ['chromium-', 'chrome-linux/chrome'],
+  ['chromium-', 'chrome-linux64/chrome'],
   // headless shell — быстрее, но без GPU-пути; годится для симуляций
   ['chromium_headless_shell-', 'chrome-headless-shell-mac-arm64/chrome-headless-shell'],
   ['chromium_headless_shell-', 'chrome-headless-shell-mac/chrome-headless-shell'],
