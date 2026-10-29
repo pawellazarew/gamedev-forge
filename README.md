@@ -14,8 +14,8 @@ change one thing, and run it again.
   The command-line tools work independently of any AI service or API key.
 
 Early-stage developer tooling. Getting-started documentation is available in
-English and Russian; detailed measurement notes, many diagnostics and agent
-helpers are currently in Russian.
+English and Russian. Code comments, CLI diagnostics and agent helpers are in
+English; historical design notes and journals remain in Russian.
 
 ## Try game-forge
 

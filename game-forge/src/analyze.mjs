@@ -2,14 +2,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { readJsonl, writeJson, mean, median, percentile, wilson, color } from './util.mjs';
 
-/**
- * Превращает сырые прогоны в читаемый баланс: кривая сложности, стены, скука,
- * влияние навыка. Ни одна из этих цифр не говорит «весело ли» — она говорит
- * «где игрок застрянет и где заскучает», а решение принимает человек.
- */
+/** Turn raw runs into readable balance evidence: difficulty, walls, boredom and
+ * skill effects. These numbers cannot establish fun; a human interprets them. */
 export function analyze(simDir, opts = {}) {
   const jsonl = path.join(simDir, 'runs.jsonl');
-  if (!fs.existsSync(jsonl)) throw new Error(`Нет ${jsonl} — сначала прогони forge sim`);
+  if (!fs.existsSync(jsonl)) throw new Error(`Missing ${jsonl}; run forge sim first`);
   const runs = readJsonl(jsonl);
   const meta = JSON.parse(fs.readFileSync(path.join(simDir, 'sim.json'), 'utf8'));
 
@@ -37,7 +34,7 @@ export function analyze(simDir, opts = {}) {
     };
   });
 
-  // --- по уровням: сколько раз входили, сколько прошли, где умирали ---
+  // --- per-level entries, clears and deaths ---
   const levels = {};
   const touch = (lvl) => (levels[lvl] ||= { level: +lvl, starts: 0, clears: 0, deaths: 0, fails: 0, ticks: [], damage: {}, causes: {} });
   for (const r of runs) {
@@ -45,12 +42,12 @@ export function analyze(simDir, opts = {}) {
       if (e.type === 'level_start') touch(e.level).starts++;
       else if (e.type === 'level_clear') { const L = touch(e.level); L.clears++; if (e.ticks) L.ticks.push(e.ticks); }
       else if (e.type === 'level_fail') {
-        // Явный провал уровня — единственное, что считается неудачной попыткой
+        // Only an explicit level failure counts as a failed attempt.
         const L = touch(e.level); L.fails++;
         if (e.cause) L.causes[e.cause] = (L.causes[e.cause] || 0) + 1;
       } else if (e.type === 'death') {
-        // Смерть — это потеря жизни, а не конец попытки: в аркаде их три за
-        // уровень, и складывать их с прохождениями значит завышать знаменатель
+        // A death consumes a life, not an entire attempt. Arcade games may allow three
+        // lives per level; adding deaths to clears would inflate the denominator.
         const L = touch(e.level); L.deaths++;
         if (e.cause) L.causes[e.cause] = (L.causes[e.cause] || 0) + 1;
       } else if (e.type === 'damage') {
@@ -63,8 +60,8 @@ export function analyze(simDir, opts = {}) {
   const levelStats = Object.values(levels)
     .sort((a, b) => a.level - b.level)
     .map((L) => {
-      // Попытка = вход на уровень. Если адаптер не шлёт level_start, падаем
-      // на прохождения + явные провалы; смерти в знаменатель не идут никогда.
+      // An attempt starts on level entry. Without level_start, fall back to clears
+      // plus explicit failures. Deaths never enter the denominator.
       const attempts = L.starts || (L.clears + L.fails);
       const w = wilson(L.clears, attempts);
       return {
@@ -83,7 +80,7 @@ export function analyze(simDir, opts = {}) {
       };
     });
 
-  // --- флаги: то, ради чего всё и затевалось ---
+  // --- balance flags ---
   const flags = [];
   const wallAt = opts.wallAt ?? 0.25;
   const boringAt = opts.boringAt ?? 0.95;
@@ -94,61 +91,61 @@ export function analyze(simDir, opts = {}) {
     if (L.attempts < 5 || L.clearRate === null) continue;
     if (L.clearRate <= wallAt) {
       flags.push({ kind: 'wall', level: L.level, severity: 'high',
-        detail: `проходимость ${(L.clearRate * 100).toFixed(0)}% (${L.clears}/${L.attempts}) — стена, игрок упрётся`,
-        hint: L.topCauses[0] ? `чаще всего конец от: ${L.topCauses[0][0]}` : null });
+        detail: `clear rate ${(L.clearRate * 100).toFixed(0)}% (${L.clears}/${L.attempts}) — wall: players will get stuck`,
+        hint: L.topCauses[0] ? `most common failure cause: ${L.topCauses[0][0]}` : null });
     } else if (L.clearRate >= boringAt && L.attempts >= 10) {
       boring.push(L);
     }
     const prev = levelStats[i - 1];
     if (prev?.clearRate != null && L.clearRate != null && prev.clearRate - L.clearRate >= spikeDelta) {
       flags.push({ kind: 'spike', level: L.level, severity: 'high',
-        detail: `скачок сложности: ${(prev.clearRate * 100).toFixed(0)}% → ${(L.clearRate * 100).toFixed(0)}% между ${prev.level} и ${L.level}` });
+        detail: `difficulty spike: ${(prev.clearRate * 100).toFixed(0)}% → ${(L.clearRate * 100).toFixed(0)}% between ${prev.level} and ${L.level}` });
     }
   }
 
-  // Три отдельных «скучно» — это три уровня. Семнадцать — это уже диагноз всей
-  // кривой, и списком по одному он не читается.
+  // Three boring levels can be listed individually. Seventeen describe a flat
+  // difficulty curve and should be grouped rather than flooding the report.
   const counted = levelStats.filter((L) => L.attempts >= 10 && L.clearRate !== null);
   if (boring.length >= 3) {
     flags.push({ kind: 'flat-curve', severity: 'medium',
-      detail: `${boring.length} из ${counted.length} уровней проходятся с вероятностью ≥${boringAt * 100}% (${boring[0].level}–${boring[boring.length - 1].level}) — сложность не растёт`,
-      hint: 'уровни отличаются рисунком, но не требованиями к игроку' });
+      detail: `${boring.length} of ${counted.length} levels have clear rate ≥${boringAt * 100}% (${boring[0].level}–${boring[boring.length - 1].level}) — difficulty does not increase`,
+      hint: 'level layouts differ, but player demands do not' });
   } else {
     for (const L of boring) {
       flags.push({ kind: 'boring', level: L.level, severity: 'low',
-        detail: `проходимость ${(L.clearRate * 100).toFixed(0)}% — уровень не создаёт напряжения` });
+        detail: `clear rate ${(L.clearRate * 100).toFixed(0)}% — the level creates no tension` });
     }
   }
 
-  // Если ветеран играет не лучше казуала — либо навык не решает, либо бот тупой.
-  const casual = bots.find((b) => /casual|новичок/i.test(b.bot));
-  const veteran = bots.find((b) => /vet|pro|эксперт/i.test(b.bot));
+  // If a veteran does not outperform a casual bot, skill may not matter or the bot may be broken.
+  const casual = bots.find((b) => /casual|\u043d\u043e\u0432\u0438\u0447\u043e\u043a/i.test(b.bot));
+  const veteran = bots.find((b) => /vet|pro|\u044d\u043a\u0441\u043f\u0435\u0440\u0442/i.test(b.bot));
   if (casual && veteran) {
     const gap = veteran.winrate - casual.winrate;
     if (gap < -0.15) {
-      // Сначала чиним бота. Иначе все выводы о балансе будут о качестве политики.
+      // Fix the bot first; otherwise balance conclusions only describe its policy quality.
       flags.push({ kind: 'bot-suspect', severity: 'high',
-        detail: `veteran играет ХУЖЕ казуала: ${(veteran.winrate * 100).toFixed(0)}% против ${(casual.winrate * 100).toFixed(0)}%`,
-        hint: 'политика ветерана сломана — до её починки цифры баланса недостоверны' });
+        detail: `veteran performs WORSE than casual: ${(veteran.winrate * 100).toFixed(0)}% versus ${(casual.winrate * 100).toFixed(0)}%`,
+        hint: 'the veteran policy is broken; balance metrics are unreliable until it is fixed' });
     } else if (gap < 0.1) {
       flags.push({ kind: 'skill-flat', severity: 'medium',
-        detail: `навык почти не влияет: casual ${(casual.winrate * 100).toFixed(0)}% vs veteran ${(veteran.winrate * 100).toFixed(0)}%`,
-        hint: 'либо механика не награждает мастерство, либо политика бота не использует её' });
+        detail: `skill has little effect: casual ${(casual.winrate * 100).toFixed(0)}% vs veteran ${(veteran.winrate * 100).toFixed(0)}%`,
+        hint: 'either the mechanics do not reward mastery or the bot policy does not exploit them' });
     }
     if (gap > 0.75) {
       flags.push({ kind: 'skill-cliff', severity: 'medium',
-        detail: `пропасть по навыку: casual ${(casual.winrate * 100).toFixed(0)}% vs veteran ${(veteran.winrate * 100).toFixed(0)}%`,
-        hint: 'новичок почти гарантированно уходит — нужен более пологий вход' });
+        detail: `skill cliff: casual ${(casual.winrate * 100).toFixed(0)}% vs veteran ${(veteran.winrate * 100).toFixed(0)}%`,
+        hint: 'a beginner is almost certain to leave; provide a gentler introduction' });
     }
   }
 
   const timeoutRate = runs.length ? runs.filter((r) => r.timedOut).length / runs.length : 0;
   if (timeoutRate > 0.2) {
     flags.push({ kind: 'timeout', severity: 'medium',
-      detail: `${(timeoutRate * 100).toFixed(0)}% прогонов уперлись в лимит кадров — партия слишком длинная или бот не может закончить` });
+      detail: `${(timeoutRate * 100).toFixed(0)}% runs hit the frame limit; the game is too long or the bot cannot finish` });
   }
 
-  // --- кривые прогресса: медиана и коридор p10–p90 по времени ---
+  // --- progress curves: median and p10-p90 range over time ---
   const curveKeys = opts.curveKeys || autoCurveKeys(runs);
   const progress = buildProgress(runs, curveKeys, meta.tickRate ?? 60);
 
@@ -197,24 +194,24 @@ function buildProgress(runs, keys, tickRate = 60) {
 }
 
 export function printAnalysis(a) {
-  console.log(color.b(`\n${a.game} — баланс (${a.totalRuns} прогонов)`));
+  console.log(color.b(`\n${a.game} — balance (${a.totalRuns} runs)`));
   for (const b of a.bots) {
     console.log(`  ${b.bot.padEnd(10)} winrate ${(b.winrate * 100).toFixed(0)}% ` +
       color.dim(`(${(b.winrateLo * 100).toFixed(0)}–${(b.winrateHi * 100).toFixed(0)}%)`) +
-      `  медиана ${b.medianSeconds}с  очки ${b.medianScore}  уровень ${b.medianLevel}`);
+      `  median ${b.medianSeconds}s  score ${b.medianScore}  level ${b.medianLevel}`);
   }
   if (a.levels.length) {
-    console.log(color.dim('  уровни (проходимость):'));
+    console.log(color.dim('  levels (clear rate):'));
     const bar = (p) => '█'.repeat(Math.round(p * 20)).padEnd(20, '·');
     for (const L of a.levels) {
       if (L.clearRate === null) continue;
       console.log(`    ${String(L.level).padStart(3)} ${bar(L.clearRate)} ${(L.clearRate * 100).toFixed(0)}% ` +
-        color.dim(`n=${L.attempts}${L.medianSeconds ? `, ${L.medianSeconds}с` : ''}`));
+        color.dim(`n=${L.attempts}${L.medianSeconds ? `, ${L.medianSeconds}s` : ''}`));
     }
   }
-  if (!a.flags.length) console.log(color.ok('  флагов баланса нет'));
+  if (!a.flags.length) console.log(color.ok('  no balance flags'));
   for (const f of a.flags) {
     const mark = f.severity === 'high' ? color.bad('!!') : f.severity === 'medium' ? color.warn(' !') : color.dim(' ·');
-    console.log(`  ${mark} [${f.kind}]${f.level ? ` ур.${f.level}` : ''} ${f.detail}${f.hint ? color.dim(` — ${f.hint}`) : ''}`);
+    console.log(`  ${mark} [${f.kind}]${f.level ? ` lvl.${f.level}` : ''} ${f.detail}${f.hint ? color.dim(` — ${f.hint}`) : ''}`);
   }
 }

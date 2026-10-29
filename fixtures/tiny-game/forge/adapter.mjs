@@ -1,7 +1,7 @@
 /**
- * Эталонный минимальный адаптер: ровно то, что требует ADAPTER.md, и ничего
- * сверх. На нём CI проверяет, что конвейер цел — probe, play и sim должны
- * отработать без единой ошибки.
+ * Minimal reference adapter: exactly the ADAPTER.md contract, with no
+ * extra features. CI uses it to verify that probe, play and sim all work
+ * without errors.
  */
 export default {
   autostart: true,
@@ -38,7 +38,7 @@ export default {
           const s = g.state();
 
           if (s.lives < prevLives) {
-            // Потеря жизни — не провал уровня: попыткой она не считается
+            // Losing a life is not failing the level and does not count as an attempt.
             events.push({ t: tickNo, type: 'death', level: prevLevel, cause: 'block_missed' });
             prevLives = s.lives;
           }
@@ -80,7 +80,7 @@ export default {
       },
 
       bots: {
-        /** Реагирует раз в 12 кадров и мажет — так играет человек, который отвлёкся */
+        /** Reacts every 12 frames and misses, like a distracted player. */
         casual(state, ctx) {
           const m = ctx.memory;
           if (ctx.tick % 12 !== 0 && m.x != null) return { x: m.x };
@@ -88,7 +88,7 @@ export default {
           m.x = state.nearest + (Math.random() * 2 - 1) * 30;
           return { x: m.x };
         },
-        /** Каждый кадр и почти без ошибки */
+        /** Reacts every frame with almost no error. */
         veteran(state) {
           if (state.nearest == null) return null;
           return { x: state.nearest + (Math.random() * 2 - 1) * 3 };

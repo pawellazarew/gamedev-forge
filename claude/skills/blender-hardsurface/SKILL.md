@@ -1,18 +1,18 @@
 ---
 name: blender-hardsurface
-description: Model, light and render hard-surface spacecraft in Blender through the BlenderMCP socket, in this game's art direction. Load when asked to build a ship/station/asset in Blender, drive Blender from Claude, produce concept renders or a cinematic video, or export a model for the game. Covers the loft-and-recess modelling method, procedural texturing, deep-space lighting, and the Blender 5.x API traps that silently produce black frames.
+description: "Model, light and render hard-surface spacecraft in Blender through the BlenderMCP socket, in this game's art direction. Load when asked to build a ship/station/asset in Blender, drive Blender from Claude, produce concept renders or a cinematic video, or export a model for the game. Covers the loft-and-recess modelling method, procedural texturing, deep-space lighting, and the Blender 5.x API traps that silently produce black frames."
 ---
 
 # Hard-surface spacecraft in Blender
 
-> **Происхождение.** Скилл целиком взят из [achimala/TheLongSilence](https://github.com/achimala/TheLongSilence)
-> (лицензия MIT, автор Anshu / @anshuc) — игра, собранная Claude за 24-часовую
-> сессию. Текст и `reference/*.py` не переписаны намеренно: это выжимка боевого
-> опыта с конкретными ловушками Blender 5.x. Наши дополнения — в разделе
-> «Экспорт под наши игры» в конце файла.
+> **Origin.** This skill comes from [achimala/TheLongSilence](https://github.com/achimala/TheLongSilence)
+> (MIT license, Anshu / @anshuc), a game built by Claude in a 24-hour session.
+> The original text and `reference/*.py` are deliberately preserved as practical
+> experience with specific Blender 5.x pitfalls. Our additions appear under
+> “Export for our games” at the end of this file.
 >
-> Требует Blender 5.x (стоит: `/Applications/Blender.app`, версия 5.1.1) и
-> аддон BlenderMCP. Установка: `tools/blender-kit/install_mcp_addon.sh`.
+> Requires Blender 5.x (installed at `/Applications/Blender.app`, version 5.1.1)
+> and the BlenderMCP add-on. Install it with `tools/blender-kit/install_mcp_addon.sh`.
 
 Everything here was learned building a 162 m survey tender end to end. The
 techniques matter more than the ship: **primitive assembly has a hard ceiling,
@@ -230,17 +230,18 @@ and ships no build-time assets — there is no `GLTFLoader` in the tree. So:
 - `KHR_materials_emissive_strength` does survive the round trip, so nav lights,
   window panes and Choir emissives keep their authored intensity.
 
-## Экспорт под наши игры (дополнение к оригиналу)
+## Export for our games (addition to the original)
 
-Наши игры — 2D на Phaser 3 и веб-canvas, поэтому основной выход из Blender
-не GLB, а **пиксели**:
+Our games use 2D Phaser 3 and web canvas, so the primary Blender output is
+**pixels** rather than GLB:
 
-- **Спрайты и спрайтшиты** — скилл `sprite-baking` и `tools/blender-kit/bake_sprites.py`:
-  ортокамера, N направлений, кадры анимации, прозрачный фон, атлас + JSON под
-  `this.load.atlas()`.
-- **Превью для критика** — `tools/blender-kit/render_preview.py`: четыре ракурса
-  в один PNG, чтобы агент открыл его через Read и оценил силуэт.
-- **Всё headless.** `blender -b -P script.py` детерминирован и повторяем;
-  BlenderMCP нужен для интерактивной лепки, а сборку ассетов гоняем скриптом.
-- Для 3D-веба (если дойдём): GLB в `public/models/`, join по материалам —
-  один материал = один draw call, `forge probe` покажет их число.
+- **Sprites and sprite sheets:** use the `sprite-baking` skill and
+  `tools/blender-kit/bake_sprites.py`: orthographic camera, N directions,
+  animation frames, transparent background, atlas and JSON for `this.load.atlas()`.
+- **Critic previews:** `tools/blender-kit/render_preview.py` puts four views
+  in one PNG for an agent to open with Read and judge the silhouette.
+- **Everything runs headlessly.** `blender -b -P script.py` makes builds
+  deterministic and repeatable; BlenderMCP is for interactive modeling, while
+  asset builds run through scripts.
+- For future 3D web games, put GLB in `public/models/` and join by material:
+  one material = one draw call; `forge probe` reports the count.

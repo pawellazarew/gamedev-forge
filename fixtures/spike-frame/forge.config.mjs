@@ -1,5 +1,5 @@
 export default {
-  name: 'Spike Frame (фикстура)',
+  name: 'Spike Frame (fixture)',
   root: '.',
   entry: 'index.html',
   viewport: 'desktop',

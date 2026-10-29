@@ -1,14 +1,14 @@
 /**
- * Адаптер игры для game-forge.
+ * Game adapter for game-forge.
  *
- * install() выполняется ВНУТРИ страницы после загрузки игры. Он не имеет
- * доступа к переменным этого файла — всё нужное объявляй внутри.
- * Задача install(): собрать window.__FORGE__ поверх внутренностей игры.
+ * install() runs INSIDE the page after the game loads. It cannot access
+ * variables from this file; declare everything it needs inside the function.
+ * Its job is to expose game internals through window.__FORGE__.
  *
- * Полный контракт: tools/game-forge/adapters/ADAPTER.md
+ * Full contract: tools/game-forge/adapters/ADAPTER.md
  */
 export default {
-  // если игра стартует не сама — forge вызовет __FORGE__.start() перед probe
+  // if the game does not start itself, forge calls __FORGE__.start() before probe
   autostart: true,
 
   install() {
@@ -19,30 +19,30 @@ export default {
       version: 1,
       ready: true,
 
-      /** Новый прогон с чистого листа. opts: {seed, mode, level, ...} */
+      /** Start a fresh run. opts: {seed, mode, level, ...} */
       start(opts = {}) {
         events.length = 0;
-        // TODO: вызвать инициализацию игры, например:
+        // TODO: initialize the game, for example:
         // window.inMenu = false; window.initGame();
         lastLevel = null;
       },
 
-      /** Прогнать n логических кадров БЕЗ рендера. */
+      /** Advance n logic frames WITHOUT rendering. */
       tick(n = 1) {
         for (let i = 0; i < n; i++) {
-          // TODO: один шаг симуляции игры, например: window.update();
-          // Здесь же удобно ловить смену уровня и писать события:
+          // TODO: advance one simulation step, for example: window.update();
+          // Detect level changes and emit events here:
           // const lvl = window.level;
           // if (lvl !== lastLevel) { events.push({t: i, type: 'level_start', level: lvl}); lastLevel = lvl; }
         }
       },
 
-      /** Отрисовать текущее состояние — нужно только для скриншотов. */
+      /** Render the current state; needed only for screenshots. */
       render() {
         // TODO: window.draw();
       },
 
-      /** Снимок состояния. Обязательны over и (для winrate) win. */
+      /** State snapshot. Requires over and, for win rates, win. */
       state() {
         return {
           over: false,   // TODO
@@ -53,26 +53,26 @@ export default {
         };
       },
 
-      /** Что писать в кривые прогресса каждые N кадров. По умолчанию = state(). */
+      /** Values for progress curves every N frames. Defaults to state(). */
       sample() {
         return this.state();
       },
 
-      /** События прогона: level_start / level_clear / death / damage / reward. */
+      /** Run events: level_start / level_clear / death / damage / reward. */
       events() {
         return events.slice();
       },
 
-      /** Применить решение бота. Формат input определяешь ты сам. */
+      /** Apply a bot decision. Define the input format for your game. */
       act(input) {
-        // TODO: например window.mouseX = input.x;
+        // TODO: for example, window.mouseX = input.x;
       },
 
       /**
-       * Политики игроков. Каждая: (state, ctx) => input
-       * ctx = {seed, tick, memory, ...params}. memory живёт весь прогон.
-       * Держи хотя бы casual (медленная реакция) и veteran (быстрая) —
-       * разница между ними показывает, влияет ли навык на исход.
+       * Player policies. Each takes (state, ctx) and returns input.
+       * ctx = {seed, tick, memory, ...params}. memory persists for the entire run.
+       * Keep at least casual (slow reactions) and veteran (fast reactions);
+       * their gap shows whether skill affects the outcome.
        */
       bots: {
         casual(state, ctx) {

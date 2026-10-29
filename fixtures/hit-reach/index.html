@@ -1,41 +1,41 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>hit-reach</title>
 <style>
   body { margin: 0; font: 16px/1.4 system-ui, sans-serif; background: #16202c; color: #e8eef5; }
-  /* Страница шире телефона: visual viewport уже лэйаут-вьюпорта, и касание
-     надо пересчитывать от сдвинутого экрана, а не от innerWidth */
+  /* Page is wider than the phone: visual viewport is narrower than layout viewport.
+        Calculate touch coordinates from the shifted screen, not innerWidth. */
   #wide { width: 728px; height: 300px; background: #2a3a4c; }
   #pan { position: absolute; left: 560px; top: 320px; padding: 10px 20px; }
-  /* Список с прокруткой: игрок докрутит, проверка обязана тоже */
+  /* Scrollable list: the check must scroll as a player would. */
   #list { width: 220px; height: 120px; overflow: auto; border: 1px solid #567; }
   #list div { height: 60px; }
-  /* Контейнер с overflow: hidden: программно прокрутить можно, игроку — нет */
+  /* overflow: hidden container: script can scroll it but a player cannot. */
   #locked { width: 220px; height: 100px; overflow: hidden; border: 1px solid #567; }
   #locked div { height: 60px; }
   #pulse { animation: pulse 1s infinite; }
   @keyframes pulse { 50% { transform: scale(1.15); } }
-  /* Типичный список магазина: по горизонтали заперт, по вертикали листается,
-     а содержимое чуть шире — лишний сдвиг по запертой оси не повод краснеть */
+  /* Typical shop list: horizontal scroll locked, vertical scroll allowed.
+        Slightly wider content and movement on the locked axis must not cause failure. */
   #shop { width: 220px; height: 120px; overflow-x: hidden; overflow-y: auto; border: 1px solid #567; }
   #shop .row { width: 240px; height: 60px; text-align: right; }
-  /* fixed-кнопка внутри центрированной сцены с overflow: hidden — сцена её
-     не режет, containing block у неё экран */
+  /* Fixed button in a centered overflow: hidden scene: the scene does not
+        clip it because the screen is its containing block. */
   #game { position: relative; overflow: hidden; width: 300px; height: 60px; margin: 0 auto; background: #203040; }
   #full { position: fixed; right: 10px; top: 10px; z-index: 5; }
-  /* absolute-кнопка в непозиционированной обёртке с overflow: hidden: режет
-     её только позиционированный #stage */
+  /* Absolute button in an unpositioned overflow: hidden wrapper: only the
+        positioned #stage clips it. */
   #stage { position: relative; height: 80px; }
   #wrap { overflow: hidden; height: 20px; }
   #abs { position: absolute; left: 10px; top: 40px; }
-  /* Позднее перекрытие: накрывает #later через 2,5 с после вызова */
+  /* Delayed overlay: covers #later 2.5 seconds after invocation. */
   #lateBox { position: relative; display: inline-block; }
   #lateBox .veil { position: absolute; inset: 0; z-index: 2; display: none; }
   #lateBox .veil.on { display: block; }
-  /* Веб-компонент в прокручиваемом списке: обход обязан пройти сквозь shadow root */
+  /* Web component in a scrollable list: traversal must cross the shadow root. */
   #list2 { width: 220px; height: 80px; overflow: auto; border: 1px solid #567; }
   #list2 .pad { height: 120px; }
   #tall { height: 1800px; }
@@ -43,37 +43,37 @@
 </head>
 <body>
 <div id="wide"></div>
-<button id="pan">за краем экрана</button>
-<div id="list"><div>1</div><div>2</div><div>3</div><div>4</div><button id="inlist">в списке</button></div>
-<div id="locked"><div>1</div><div>2</div><button id="inlocked">в запертом</button></div>
-<button id="late" disabled>включится</button>
-<button id="dead" disabled>выключена навсегда</button>
-<button id="pulse">пульс</button>
-<div id="shop"><div class="row">1</div><div class="row">2</div><div class="row">3</div><div class="row"><button id="buy">купить</button></div></div>
-<div id="game"><button id="full">во весь экран</button></div>
-<div id="stage"><div id="wrap"><button id="abs">на сцене</button></div></div>
-<span id="lateBox"><button id="later">позже накроют</button><span class="veil"></span></span>
+<button id="pan">beyond screen edge</button>
+<div id="list"><div>1</div><div>2</div><div>3</div><div>4</div><button id="inlist">in list</button></div>
+<div id="locked"><div>1</div><div>2</div><button id="inlocked">in locked container</button></div>
+<button id="late" disabled>enabled later</button>
+<button id="dead" disabled>disabled forever</button>
+<button id="pulse">pulse</button>
+<div id="shop"><div class="row">1</div><div class="row">2</div><div class="row">3</div><div class="row"><button id="buy">buy</button></div></div>
+<div id="game"><button id="full">full screen</button></div>
+<div id="stage"><div id="wrap"><button id="abs">on stage</button></div></div>
+<span id="lateBox"><button id="later">covered later</button><span class="veil"></span></span>
 <div id="list2"><div class="pad"></div><shop-item></shop-item></div>
 <div id="tall"></div>
-<button id="below">ниже экрана</button>
+<button id="below">below screen</button>
 <script>
-  // Кнопки достижимы игроком, кроме #inlocked (заперта overflow: hidden),
-  // #dead (disabled) и #later после coverLaterIn(). Счётчики показывают, дошёл ли настоящий клик.
+  // Buttons are reachable except #inlocked (locked by overflow: hidden),
+  // #dead (disabled) and #later after coverLaterIn(). Counters track real clicks.
   window.clicks = {};
   const count = (b) => b.addEventListener('click', () => { window.clicks[b.id] = (window.clicks[b.id] || 0) + 1; });
   customElements.define('shop-item', class extends HTMLElement {
     connectedCallback() {
       const root = this.attachShadow({ mode: 'open' });
-      root.innerHTML = '<button id="sb">в shadow</button>';
+      root.innerHTML = '<button id="sb">in shadow</button>';
       count(root.getElementById('sb'));
     }
   });
   for (const b of document.querySelectorAll('button')) count(b);
-  // Игра, которая реагирует на прокрутку: чистая проверка не должна её будить
+  // A game reacting to scrolling must not be awakened by a check alone.
   window.scrolls = 0;
   document.getElementById('list').addEventListener('scroll', () => { window.scrolls++; });
-  // Полноэкранный CSS игры: body — свой контейнер прокрутки. free — body
-  // листается (html заперт), иначе заперты оба.
+  // Full-screen game CSS: body is a separate scroll container. In free mode
+  // body scrolls while html is locked; otherwise both are locked.
   window.fullscreenCss = (free) => {
     const h = document.documentElement.style, b = document.body.style;
     h.overflow = 'hidden'; h.height = '100%';

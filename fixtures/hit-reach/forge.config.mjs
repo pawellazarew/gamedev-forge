@@ -1,5 +1,5 @@
 export default {
-  name: 'Hit Reach (фикстура)',
+  name: 'Hit Reach (fixture)',
   root: '.', entry: 'index.html', viewport: 'desktop', renderer: '2d',
   renderMode: 'on-demand',
   scenarios: './forge/scenarios.mjs',

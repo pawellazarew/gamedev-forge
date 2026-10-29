@@ -1,11 +1,11 @@
 export default {
-  name: 'Dead Game (фикстура)',
+  name: 'Dead Game (fixture)',
   root: '.',
   entry: 'index.html',
   viewport: 'desktop',
   renderer: '2d',
-  // Ни адаптера, ни сценариев: проверяем универсальный слой probe на игре,
-  // которая выглядит живой, но ничего не перерисовывает.
+  // No adapter or scenarios: exercise generic probe checks on a game that
+  // looks alive but never redraws.
   budgets: {
     frameMs: 16.7,
     errors: 0,

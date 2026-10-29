@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
-# Ставит агентов-критиков и скиллы в рабочий проект:
+# Install critic agents and skills into a working project:
 #   ./install.sh /path/to/project
-# Файлы копируются, а не симлинкуются: проект должен переживать перенос репо.
+# Files are copied, not symlinked, so the project survives repository moves.
 set -euo pipefail
 
-TARGET="${1:?укажи путь к проекту: ./install.sh /path/to/project}"
+TARGET="${1:?provide a project path: ./install.sh /path/to/project}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-[ -d "$TARGET" ] || { echo "Нет каталога $TARGET"; exit 1; }
+[ -d "$TARGET" ] || { echo "Directory not found: $TARGET"; exit 1; }
 
 mkdir -p "$TARGET/.claude/agents" "$TARGET/.claude/skills"
 cp "$HERE"/claude/agents/*.md "$TARGET/.claude/agents/"
 cp -R "$HERE"/claude/skills/* "$TARGET/.claude/skills/"
 
-echo "✓ агенты:  $(ls "$HERE"/claude/agents/*.md | wc -l | tr -d ' ') шт → $TARGET/.claude/agents/"
-echo "✓ скиллы:  $(ls -d "$HERE"/claude/skills/*/ | wc -l | tr -d ' ') шт → $TARGET/.claude/skills/"
+echo "✓ agents:  $(ls "$HERE"/claude/agents/*.md | wc -l | tr -d ' ') files → $TARGET/.claude/agents/"
+echo "✓ skills:  $(ls -d "$HERE"/claude/skills/*/ | wc -l | tr -d ' ') files → $TARGET/.claude/skills/"
 cat <<INFO
 
-Дальше:
+Next:
   cd "$HERE/game-forge" && npm install
-  node bin/forge.mjs init <папка игры>
+  node bin/forge.mjs init <game directory>
 
-Скиллы ссылаются на инструменты по пути tools/game-forge — либо положи репо
-туда, либо поставь симлинк:
+Skills refer to tools at tools/game-forge. Place the repository there
+or create symlinks:
   ln -s "$HERE/game-forge"  "$TARGET/tools/game-forge"
   ln -s "$HERE/blender-kit" "$TARGET/tools/blender-kit"
 INFO

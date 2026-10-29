@@ -5,29 +5,26 @@ import { serve } from './server.mjs';
 import { launch, newPage, viewport as viewportPreset } from './browser.mjs';
 import { normalizeHittable } from './hittest.mjs';
 
-/**
- * Конфиг игры: <gameDir>/forge.config.mjs. Всё опционально кроме root/entry —
- * без адаптера доступен универсальный слой (shots/probe/play), с адаптером — sim.
- */
+/** Game config: <gameDir>/forge.config.mjs. The universal shots/probe/play layer
+ * works without an adapter; simulation requires one. root/entry identify the build. */
 const DEFAULTS = {
   name: 'game',
   root: '.',
   entry: 'index.html',
   viewport: 'desktop',
-  renderer: '2d',        // '2d' | 'webgl' — влияет на флаги запуска браузера
-  // 'continuous' — игра перерисовывается каждый кадр (аркады, экшены);
-  // 'on-demand'  — рисует только по событию (пошаговые, Wordle-подобные).
-  // Во втором случае «за 3 секунды ничего не нарисовано» — норма, а не поломка.
+  renderer: '2d',        // '2d' | 'webgl' controls browser launch flags
+  // continuous redraws every frame (arcade/action games).
+  // on-demand draws on events (turn-based or Wordle-like games); no drawing
+  // for three seconds can be normal in that mode.
   renderMode: 'continuous',
-  // Какой канвас считать игровым, если их на странице несколько. Пусто —
-  // берётся самый большой видимый: игровой почти всегда крупнее индикаторов
-  // и прелоадеров, а первый в DOM — это как повезёт.
+  // Choose the game canvas explicitly or use the largest visible canvas.
+  // Indicators and preloaders may appear first in DOM order.
   canvasSelector: null,
   adapter: null,
   scenarios: null,
   references: 'forge/references',
-  // Что обязано оставаться кликабельным для настоящего игрока: массив
-  // селекторов или { selectors, viewports, setup } — см. hittest.mjs.
+  // Controls a real player must reach: selectors or { selectors, viewports, setup };
+  // see hittest.mjs.
   hittable: null,
   budgets: { frameMs: 16.7, errors: 0, bundleKb: 8000, loadMs: 3000 },
 };
@@ -37,16 +34,16 @@ export async function loadConfig(gameDir) {
   const file = path.join(dir, 'forge.config.mjs');
   if (!fs.existsSync(file)) {
     throw new Error(
-      `Нет forge.config.mjs в ${dir}\n` +
-      `Создай его: node tools/game-forge/bin/forge.mjs init ${gameDir}`,
+      `No forge.config.mjs in ${dir}\n` +
+      `Create it with: node tools/game-forge/bin/forge.mjs init ${gameDir}`,
     );
   }
   const mod = await import(pathToFileURL(file).href + `?t=${Date.now()}`);
   const cfg = { ...DEFAULTS, ...mod.default };
-  // Опечатка в renderMode тихо возвращала бы игру под гейт «рендер мёртв»,
-  // хотя автор от него отписался.
+  // A renderMode typo must not silently re-enable the dead-render gate
+  // when the game author opted out.
   if (!['continuous', 'on-demand'].includes(cfg.renderMode)) {
-    throw new Error(`renderMode: "${cfg.renderMode}" — допустимы только 'continuous' и 'on-demand'`);
+    throw new Error(`renderMode: "${cfg.renderMode}" — only supported values are 'continuous' and 'on-demand'`);
   }
   cfg.budgets = { ...DEFAULTS.budgets, ...(mod.default.budgets || {}) };
   cfg.hittable = normalizeHittable(cfg.hittable);
@@ -58,18 +55,15 @@ export async function loadConfig(gameDir) {
   return cfg;
 }
 
-/**
- * Разделяем «адаптера нет» и «адаптер сломан»: во втором случае бросаем,
- * иначе опечатка в адаптере выглядела бы как игра без симуляции и `all`
- * молча пропускал бы половину проверки.
- */
+/** Distinguish missing adapters from broken ones. A broken adapter must throw
+ * rather than look like a game without simulation and make all skip checks. */
 export async function loadAdapter(cfg) {
   if (!cfg.adapterFile) return null;
-  if (!fs.existsSync(cfg.adapterFile)) throw new Error(`Адаптер не найден: ${cfg.adapterFile}`);
+  if (!fs.existsSync(cfg.adapterFile)) throw new Error(`Adapter not found: ${cfg.adapterFile}`);
   const mod = await import(pathToFileURL(cfg.adapterFile).href + `?t=${Date.now()}`);
   const a = mod.default || mod;
   if (typeof a.install !== 'function') {
-    throw new Error(`Адаптер ${cfg.adapterFile} должен экспортировать install() — см. adapters/ADAPTER.md`);
+    throw new Error(`Adapter ${cfg.adapterFile} must export install(); see adapters/ADAPTER.md`);
   }
   return a;
 }
@@ -80,24 +74,19 @@ export async function loadScenarios(cfg) {
   return mod.default || [];
 }
 
-/**
- * Полная обвязка: сервер + браузер + страница с игрой.
- * Возвращает всё, что нужно командам, и `dispose` для аккуратного закрытия.
- */
+/** Complete harness: server, browser and game page, with dispose for cleanup. */
 export async function boot(cfg, opts = {}) {
   const { viewport = cfg.viewport, headless = true, shell = false, seed = 1, adapter = null } = opts;
-  // Имя вьюпорта проверяем до запуска чего бы то ни было: раньше опечатка
-  // (в том числе в поле viewport сценария) роняла newPage уже после старта
-  // сервера и браузера — и оба оставались висеть.
+  // Validate viewport names before starting anything. Otherwise a typo can fail
+  // newPage after launching the server/browser and leave both running.
   viewportPreset(viewport);
   const server = await serve(cfg.rootDir);
-  // Софтверный WebGL нужен только в headless, где иначе выйдет чёрный кадр.
-  // В headed-режиме он бы отобрал ровно то, ради чего headed и запускают —
-  // настоящий GPU.
+  // Software WebGL is only for headless mode, where hardware rendering may show
+  // a black frame. Headed mode must retain its actual GPU path.
   const browser = await launch({ headless, shell, swiftshader: headless && cfg.renderer === 'webgl' });
   const page = await newPage(browser, viewport);
 
-  // Детерминизм ставим ДО загрузки игры: иначе первый же Math.random() уйдёт мимо.
+  // Install determinism before loading the game so the first Math.random is seeded.
   await page.addInitScript(makePreload(), { seed });
   if (adapter?.preload) await page.addInitScript(adapter.preload, { seed });
 
@@ -118,11 +107,8 @@ export async function boot(cfg, opts = {}) {
   };
 }
 
-/**
- * Инжектируется до загрузки страницы.
- * 1) сеет Math.random — без этого два прогона несравнимы и «фикс баланса» неверифицируем;
- * 2) даёт ручку паузы rAF, чтобы сим мог крутить логику без рендера.
- */
+/** Injected before page load: seed Math.random to make runs comparable and
+ * balance changes verifiable, and expose rAF pause for render-free simulation. */
 function makePreload() {
   return ({ seed }) => {
     let s = (seed >>> 0) || 1;
@@ -139,33 +125,26 @@ function makePreload() {
     window.__forgeRafPaused = false;
     const queue = [];
 
-    /**
-     * Оборачиваем каждый rAF-колбэк игры и засекаем, сколько он выполнялся.
-     * Интервал МЕЖДУ кадрами при живом vsync равен периоду дисплея (8.3 мс на
-     * 120 Гц) и о стоимости игры не говорит ничего — стоимость видна только
-     * изнутри колбэка.
-     */
+    /** Time each game rAF callback. With vsync, intervals between frames simply
+     * match the display period (8.3 ms at 120 Hz); actual work must be timed
+     * inside the callback. */
     const timed = (cb) => (ts) => {
       const f = window.__forgeFrames;
       const t0 = performance.now();
-      // inCb — «сейчас выполняется колбэк игры». Без этого признака любая
-      // отрисовка на странице (setInterval, обработчик, накладной график)
-      // засчитывалась бы игре, и рисующая менюшка ручалась бы за мёртвый
-      // игровой цикл.
+      // inCb means a game callback is running. Drawing from setInterval, handlers
+      // or an unrelated overlay must not count as evidence of a live game loop.
       if (f) f.inCb++;
       const leave = () => { if (f && f.inCb > 0) f.inCb--; };
       let async = false;
       try {
         const out = cb(ts);
-        // `requestAnimationFrame(async loop)` заканчивается на первом await, а
-        // рисует после него. Опустив флаг сразу, мы объявили бы такую игру
-        // нерисующей. Держим кадр открытым до оседания промиса.
+        // An async rAF callback can draw after its first await. Keep the callback
+        // open until its promise settles rather than declaring it non-rendering.
         if (out && typeof out.then === 'function') { async = true; out.then(leave, leave); }
       } finally {
-        // Копим в pending, а закрываем кадр в tickProbe: два колбэка по 10 мс
-        // в одном кадре — это кадр за 20 мс, а не два кадра по 10.
-        // cbPending считает сами вызовы: кадр, в котором игра ничего не считала,
-        // и кадр, в котором игра вообще не рисовала, — разные вещи.
+        // Accumulate pending work and finalize it in tickProbe: two 10 ms callbacks
+        // in one frame cost 20 ms, not two separate 10 ms frames. cbPending counts
+        // invocations separately from drawing activity.
         if (f) { f.pending += performance.now() - t0; f.cbPending++; }
         if (!async) leave();
       }
@@ -181,42 +160,30 @@ function makePreload() {
       pending.forEach((cb) => rafReal(timed(cb)));
     };
 
-    // Счётчик draw call'ов: для 3D это первый подозреваемый при просадке fps,
-    // а получить его иначе можно только через дорогую трассировку.
-    // Считаем ПОКАДРОВО: среднее прячет пик, а тормозит игра именно на пике —
-    // один кадр с 600 вызовами при среднем 7 остаётся незамеченным.
-    //
-    // «Кадр игры» и «кадр, в котором игра рисовала» — разные вещи: пустой
-    // `requestAnimationFrame(loop)` даёт полный набор кадров игры на намертво
-    // застывшей картинке.
-    //
-    // Кадр помечается нарисованным при ДВУХ условиях: команда пришла изнутри
-    // колбэка игры и адресована ТОМУ САМОМУ канвасу, который probe снимает
-    // скриншотом. Иначе за мёртвый игровой канвас ручаются закадровый
-    // бэкбуфер, соседний канвас с индикатором или помощник в стороне.
-    //
-    // Раньше здесь была «видимость» через clientWidth с кэшем — она врала в
-    // обе стороны: канвас, показанный после загрузки, навсегда оставался
-    // «невидимым», а `opacity: 0` считался видимым. Тождество с целью
-    // скриншота однозначно, не требует лейаута и не расходится с тем, по
-    // чему потом сравниваются пиксели.
+    // Count draw calls per frame: GPU spikes disappear in averages, such as one
+    // 600-call frame among frames averaging 7 calls. A game callback is not
+    // evidence of drawing: an empty loop can run over a frozen image.
+    // Count a painted frame only when a draw originates in a game callback and
+    // targets the exact canvas probe screenshots. Offscreen buffers, indicators
+    // and helper canvases must not vouch for a dead game canvas.
+    // A cached clientWidth visibility check previously misclassified canvases
+    // shown after load and opacity:0 canvases. Identity with the screenshot
+    // target is unambiguous, avoids layout and matches pixel comparisons.
     const gameCanvas = () => {
       let cv = window.__forgeCanvas;
-      // Перезапрашиваем, только если канвас исчез из документа: игра могла
-      // пересоздать его. Это чтение свойства, лейаут не дёргается.
+      // Resolve again only if the canvas was detached and recreated.
+      // isConnected reads a property without forcing layout.
       if (!cv || !cv.isConnected) {
         cv = document.querySelector(window.__forgeCanvasSel || 'canvas');
         window.__forgeCanvas = cv;
       }
       return cv;
     };
-    // Флаг, а не счётчик: нужен факт, а не количество. Отметив кадр, дальше
-    // выходим сразу — за каждый fillRect платить проверками незачем.
+    // Use a flag, not a count: after a frame is marked, avoid checks on every fillRect.
     const markPaint = (f, cv) => {
       if (!f || !f.inCb || !cv || f.painted) return;
       if (cv === gameCanvas()) f.painted = 1;
-      // Игра рисует, но не туда, куда смотрит probe. Само по себе это не
-      // приговор — это подсказка «укажи canvasSelector».
+      // The game is drawing elsewhere; suggest canvasSelector rather than failing it outright.
       else f.paintedOther = 1;
     };
 
@@ -229,8 +196,7 @@ function makePreload() {
         proto.prototype[m] = function (...args) {
           window.__forgeDraws++;
           const f = window.__forgeFrames;
-          // Счётчик draw call'ов считает ВСЁ (это нагрузка на GPU),
-          // а признак отрисовки — только то, что видит игрок.
+          // Draw-call counts include all GPU work; paint activity only counts the player-visible canvas.
           if (f) { f.drawsPending++; markPaint(f, this.canvas); }
           return orig.apply(this, args);
         };
@@ -250,11 +216,10 @@ function makePreload() {
       }
     }
 
-    // Три разных числа, которые легко перепутать:
-    //   count     — кадры САМОЙ пробы: tickProbe крутится сам по себе и считает
-    //               их, даже если игра не нарисовала ни одного кадра;
-    //   gameFrames — кадры, в которых выполнялся rAF-колбэк ИГРЫ (вот это жизнь);
-    //   times     — интервалы между кадрами, то есть каденс браузера (справочно).
+    // Three distinct values:
+    // count: probe frames, even when the game draws nothing.
+    // gameFrames: frames containing a game rAF callback.
+    // times: frame intervals, the browser cadence, for reference.
     window.__forgeFrames = {
       count: 0, long: 0, times: [], last: 0, startedAt: 0,
       work: [], workTotal: 0, workMax: 0, pending: 0,
@@ -262,8 +227,8 @@ function makePreload() {
         otherPaintFrames: 0, paintedOther: 0,
       draws: [], drawsPending: 0, drawsMax: 0,
     };
-    // tickProbe зарегистрирован первым, поэтому в каждом кадре он выполняется
-    // раньше игровых колбэков — и закрывает работу ПРЕДЫДУЩЕГО кадра.
+    // tickProbe is registered first and runs before game callbacks,
+    // so it closes the work accumulated for the previous frame.
     const tickProbe = (ts) => {
       const f = window.__forgeFrames;
       if (!f.startedAt) f.startedAt = performance.now();
@@ -279,18 +244,16 @@ function makePreload() {
         if (f.work.length < 4000) f.work.push(frameWork);
         if (frameWork > f.workMax) f.workMax = frameWork;
 
-        // Кадр засчитывается игре, только если её колбэк в нём выполнялся.
+        // Count a game frame only if its callback ran.
         const cbs = f.cbPending;
         f.cbPending = 0;
         if (cbs > 0) f.gameFrames++;
 
         const frameDraws = f.drawsPending;
         f.drawsPending = 0;
-        // Отрисовку помечают оба хука — и 2D, и WebGL, — поэтому здесь один
-        // флаг. Сбрасывать его обязательно: иначе одна отрисовка помечает
-        // нарисованными все последующие кадры.
-        // lastPaintAt нужен, чтобы отличить «рисует редко» от «рисовал и
-        // перестал»: доля кадров у этих двух случаев одинаковая.
+        // Both 2D and WebGL hooks set one paint flag. Reset it each frame so one
+        // draw cannot mark all future frames as painted. lastPaintAt distinguishes
+        // occasional redraws from rendering that ran and then stopped.
         if (f.painted) { f.paintFrames++; f.lastPaintAt = f.count; }
         if (f.paintedOther) f.otherPaintFrames++;
         f.painted = 0;

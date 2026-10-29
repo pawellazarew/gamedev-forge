@@ -1,17 +1,17 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Dirty Render (фикстура)</title>
+<title>Dirty Render (fixture)</title>
 <!--
-  Здоровая игра, которая рисует ТОЛЬКО по событию и НЕ заводит
-  requestAnimationFrame вовсе — так устроен обычный Wordle.
-  Кадров игры ноль по определению: мерить стоимость кадра у неё нечего,
-  но игра работает. Форма, на которой гейт даёт ложный красный.
+  A healthy game that draws ONLY on events and does NOT start
+  requestAnimationFrame at all, as in a typical Wordle game.
+  It has zero game frames by definition, so frame cost cannot be measured,
+  but the game works. This pattern caused a false failure in the gate.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>
 <script>
   const ctx = document.getElementById('game').getContext('2d');
-  let letters = ['С', 'Л', 'О', 'В', 'О'];
+  let letters = ['W', 'O', 'R', 'D', 'S'];
 
   function render() {
     ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
@@ -20,8 +20,8 @@
       ctx.fillStyle = '#fff'; ctx.font = '40px sans-serif'; ctx.fillText(ch, 85 + i * 100, 205);
     });
   }
-  render();                                   // первый и единственный кадр
+  render();                                   // first and only frame
   addEventListener('keydown', (e) => { letters.push(e.key); render(); });
   addEventListener('pointerdown', render);
-  // Никакого requestAnimationFrame: перерисовка только по вводу.
+  // No requestAnimationFrame: redraw only on input.
 </script>

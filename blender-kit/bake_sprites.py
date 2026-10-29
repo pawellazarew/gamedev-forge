@@ -1,11 +1,11 @@
 """
-3D-модель → спрайтшит для 2D-игры.
+3D model to a sprite sheet for a 2D game.
 
     ./blend.sh bake_sprites.py --blend ship.blend -- --out assets/ship --dirs 8 --size 128
     ./blend.sh bake_sprites.py -- --import robot.glb --out assets/robot \
         --dirs 8 --frames 1-24 --step 2 --size 96 --elevation 30 --anim walk
 
-Выход: <out>.png (атлас) + <out>.json (Phaser atlas) + <out>/frames/*.png (сырьё).
+Output: <out>.png (atlas) + <out>.json (Phaser atlas); optional raw PNGs in <out>_frames/.
 """
 import os
 import sys
@@ -22,16 +22,16 @@ DEFAULTS = {
     'out': 'sprites',
     'import': '',
     'object': '',
-    'anim': 'idle',      # имя анимации в атласе
-    'dirs': 8,           # направлений по кругу; 1 = один ракурс
-    'start_angle': 0.0,  # 0° = камера со стороны +X
-    'elevation': 30.0,   # 30 — изометрия, 0 — вид сбоку, 90 — сверху
-    'frames': '1',       # '1' или '1-24'
+    'anim': 'idle',      # animation label in the atlas
+    'dirs': 8,           # directions around the model; 1 = one view
+    'start_angle': 0.0,  # 0 degrees = camera on the +X side
+    'elevation': 30.0,   # 30 = isometric, 0 = side view, 90 = top view
+    'frames': '1',       # '1' or '1-24'
     'step': 1,
-    'size': 128,         # итоговый размер кадра
-    'ss': 4,             # суперсэмплинг: рендер в size*ss, потом даунсемпл
+    'size': 128,         # final frame size
+    'ss': 4,             # supersampling: render at size*ss, then downsample
     'samples': 32,
-    'quantize': 0,       # уровней цвета на канал; 0 = выкл
+    'quantize': 0,       # color levels per channel; 0 = disabled
     'cols': 0,
     'keep_frames': False,
 }
@@ -63,9 +63,9 @@ def main():
     dirs = int(a['dirs'])
     scene = bpy.context.scene
 
-    print(f'[forge] движок {engine}, объектов {len(objects)}, радиус {radius:.3f}, '
-          f'свет {"добавлен" if lit else "из сцены"}')
-    print(f'[forge] {dirs} направлений × {len(frames)} кадров = {dirs * len(frames)} рендеров')
+    print(f'[forge] engine {engine}, objects {len(objects)}, radius {radius:.3f}, '
+          f'lights {"added" if lit else "from scene"}')
+    print(f'[forge] {dirs} directions × {len(frames)} frames = {dirs * len(frames)} renders')
 
     tiles = []
     for d in range(dirs):
@@ -109,8 +109,8 @@ def main():
         except OSError:
             pass
 
-    print(f'[forge] атлас: {png} ({size[0]}×{size[1]})')
-    print(f'[forge] мета:  {out_base}.json — {len(animations)} анимаций, {len(tiles)} кадров')
+    print(f'[forge] atlas: {png} ({size[0]}×{size[1]})')
+    print(f'[forge] metadata:  {out_base}.json — {len(animations)} animations, {len(tiles)} frames')
     print('[forge] Phaser: this.load.atlas("%s", "%s.png", "%s.json")'
           % (os.path.basename(out_base), os.path.basename(out_base), os.path.basename(out_base)))
 

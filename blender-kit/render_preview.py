@@ -1,6 +1,6 @@
 """
-Модель → один PNG с четырьмя ракурсами, чтобы агент открыл его через Read
-и оценил силуэт, пропорции и детализацию.
+Model to a four-view PNG for an agent to open with Read
+and review silhouette, proportions and detail.
 
     ./blend.sh render_preview.py -- --import ship.glb --out .forge/ship-preview.png
     ./blend.sh render_preview.py --blend ship.blend -- --out preview.png --size 512
@@ -26,10 +26,10 @@ DEFAULTS = {
 }
 
 VIEWS = [
-    ('3/4 спереди', 35.0, None),
-    ('сбоку', 90.0, 0.0),
-    ('сверху', 0.0, 85.0),
-    ('3/4 сзади', 215.0, None),
+    ('front 3/4', 35.0, None),
+    ('side', 90.0, 0.0),
+    ('top', 0.0, 85.0),
+    ('rear 3/4', 215.0, None),
 ]
 
 
@@ -64,8 +64,8 @@ def main():
         sheet[r * h:(r + 1) * h, c * w:(c + 1) * w] = img
 
     if a['background'] == 'dark':
-        # Прозрачный фон на тёмной теме читается как «дыра» — подкладываем холст,
-        # иначе критик оценивает не модель, а шахматку вьюера.
+        # A transparent background looks like a hole in dark themes; add a backdrop
+        # so reviewers judge the model rather than the viewer checkerboard.
         bg = np.zeros_like(sheet)
         bg[..., :3] = 0.06
         bg[..., 3] = 1.0
@@ -75,9 +75,9 @@ def main():
 
     save_rgba(sheet, out)
     size_m = (hi - lo)
-    print(f'[forge] превью: {out} ({w * 2}×{h * 2})')
-    print(f'[forge] габариты модели: {size_m.x:.2f} × {size_m.y:.2f} × {size_m.z:.2f}')
-    print(f'[forge] ракурсы: {", ".join(v[0] for v in VIEWS)}')
+    print(f'[forge] preview: {out} ({w * 2}×{h * 2})')
+    print(f'[forge] model dimensions: {size_m.x:.2f} × {size_m.y:.2f} × {size_m.z:.2f}')
+    print(f'[forge] views: {", ".join(v[0] for v in VIEWS)}')
 
 
 main()

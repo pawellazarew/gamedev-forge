@@ -1,6 +1,6 @@
 """
-Собирает простого робота из примитивов и анимацию шага — тестовая мишень
-для bake_sprites.py и render_preview.py.
+Build a simple robot from primitives with a walk animation as a test model
+for bake_sprites.py and render_preview.py.
 
     ./blend.sh demo_robot.py -- --out /tmp/robot.blend
 """
@@ -31,7 +31,7 @@ def mat(name, rgb, metallic=0.8, rough=0.35, emit=0.0):
 
 
 def box(name, size, loc, material):
-    # primitive_cube_add(size=1) даёт куб со стороной 1, поэтому scale == размер
+    # primitive_cube_add(size=1) creates a unit cube, so scale equals dimensions
     bpy.ops.mesh.primitive_cube_add(size=1, location=loc)
     o = bpy.context.object
     o.name = name
@@ -65,7 +65,7 @@ def main():
     for o in parts + arms + legs:
         o.parent = root
 
-    # шаг: ноги и руки качаются в противофазе
+    # walk: legs and arms swing in opposite phases
     n = int(a['frames'])
     scene = bpy.context.scene
     scene.frame_start, scene.frame_end = 1, n
@@ -85,7 +85,7 @@ def main():
     out = os.path.abspath(a['out'])
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
     bpy.ops.wm.save_as_mainfile(filepath=out)
-    print(f'[forge] сохранено: {out} ({n} кадров анимации)')
+    print(f'[forge] saved: {out} ({n} animation frames)')
 
 
 main()

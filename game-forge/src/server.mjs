@@ -26,20 +26,18 @@ const MIME = {
   '.wasm': 'application/wasm',
 };
 
-/**
- * Статик-сервер под корень игры. Пишем свой, а не берём зависимость:
- * нужен один файл, ноль конфигурации и предсказуемое поведение в CI.
- * @returns {Promise<{url: string, port: number, close: () => Promise<void>, bytes: () => number}>}
- */
+/** Zero-configuration static server rooted at the game directory. A small local
+ * implementation keeps CI behavior predictable without another dependency.
+ * @returns {Promise<{url: string, port: number, close: () => Promise<void>, bytes: () => number}>} */
 export function serve(root, { port = 0 } = {}) {
-  // Канонизируем корень сразу: на macOS /tmp — сам симлинк на /private/tmp,
-  // и без realpath любая проверка сравнивала бы разные написания одного пути
+  // Canonicalize the root first: macOS /tmp is a symlink to /private/tmp,
+  // so string comparisons otherwise compare different spellings of one path.
   const abs = fs.realpathSync(path.resolve(root));
   let served = 0;
 
   const server = http.createServer((req, res) => {
-    // decodeURIComponent бросает на битом percent-encoding («/%E0%A4%A»);
-    // без этого блока падал весь процесс forge, а не один запрос
+    // decodeURIComponent throws on malformed percent encoding such as /%E0%A4%A.
+    // Fail only this request rather than crashing the whole forge process.
     let url;
     try {
       url = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -49,9 +47,8 @@ export function serve(root, { port = 0 } = {}) {
     }
     let file = path.resolve(abs, '.' + path.posix.normalize('/' + url));
 
-    // Проверка пути в две ступени. Текстовая ловит «../», но не симлинк:
-    // ссылка внутри корня может указывать куда угодно, и по строке она
-    // выглядит совершенно легально.
+    // Two-stage path validation: textual checks catch ../ but cannot detect
+    // a symlink inside the root pointing outside it.
     const inside = (p) => {
       const rel = path.relative(abs, p);
       return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
@@ -62,7 +59,7 @@ export function serve(root, { port = 0 } = {}) {
       if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
       if (!fs.existsSync(file)) { res.writeHead(404).end('not found'); return; }
 
-      // Вторая ступень: куда путь ведёт на самом деле
+      // Second stage: resolve where the path actually points.
       const real = fs.realpathSync(file);
       if (!inside(real)) { res.writeHead(403).end('forbidden'); return; }
       file = real;
@@ -72,7 +69,7 @@ export function serve(root, { port = 0 } = {}) {
       res.writeHead(200, {
         'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
         'cache-control': 'no-store',
-        // многие движки просят cross-origin isolation под SharedArrayBuffer
+        // Many engines require cross-origin isolation for SharedArrayBuffer.
         'cross-origin-opener-policy': 'same-origin',
         'cross-origin-embedder-policy': 'require-corp',
       });

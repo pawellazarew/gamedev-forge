@@ -4,16 +4,15 @@ import { fileURLToPath } from 'node:url';
 
 export const FORGE_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 
-/** Разбор argv в стиле `--key value`, `--key=value` / `--flag`. Позиционные — в `_`. */
+/** Parse `--key value`, `--key=value` and `--flag`; positional arguments go in `_`. */
 export function parseArgs(argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const body = a.slice(2);
-      // Форма `--key=value` обязательна: без неё `--scenario=storm-peak`
-      // превращался в неизвестный флаг «scenario=storm-peak», сцена молча
-      // не готовилась, и probe мерил стартовый экран под зелёным вердиктом.
+      // Support `--key=value`: otherwise --scenario=storm-peak becomes an unknown flag,
+      // the scene is never prepared, and probe reports a green result for the title screen.
       const eq = body.indexOf('=');
       if (eq > 0) { out[body.slice(0, eq)] = body.slice(eq + 1); continue; }
       const key = body;
@@ -26,8 +25,8 @@ export function parseArgs(argv) {
 }
 
 export function num(v, dflt) {
-  // `--runs` без значения парсится во флаг `true`, а Number(true) === 1:
-  // без этой проверки «forge sim --runs --bot x» молча делал бы один прогон
+  // An option without a value becomes true, and Number(true) === 1.
+  // Reject it here so `forge sim --runs --bot x` does not silently run once.
   if (typeof v === 'boolean' || v == null || v === '') return dflt;
   const n = Number(v);
   return Number.isFinite(n) ? n : dflt;
@@ -60,26 +59,26 @@ export function readJsonl(file) {
     .map((l) => JSON.parse(l));
 }
 
-/** Метка прогона: 20260728-143005 — сортируется лексикографически. */
+/** Lexicographically sortable run stamp: 20260728-143005. */
 export function runStamp(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-/** Директория артефактов прогона: <gameDir>/.forge/<kind>-<stamp>/ */
+/** Run artifact directory: <gameDir>/.forge/<kind>-<stamp>/. */
 export function runDir(gameDir, kind, stamp = runStamp()) {
   return ensureDir(path.join(gameDir, '.forge', `${kind}-${stamp}`));
 }
 
-/** Симлинк .forge/latest-<kind> → свежий прогон, чтобы агент всегда знал куда смотреть. */
+/** Point .forge/latest-<kind> at the newest run so reviewers can find it. */
 export function linkLatest(gameDir, kind, dir) {
   const link = path.join(gameDir, '.forge', `latest-${kind}`);
-  try { fs.unlinkSync(link); } catch { /* нет — и не надо */ }
-  try { fs.symlinkSync(path.basename(dir), link, 'dir'); } catch { /* FS без симлинков — не критично */ }
+  try { fs.unlinkSync(link); } catch { /* Nothing to remove. */ }
+  try { fs.symlinkSync(path.basename(dir), link, 'dir'); } catch { /* Symlinks unavailable on this filesystem; nonfatal. */ }
   return link;
 }
 
-// --- статистика ---
+// --- statistics ---
 
 export function mean(xs) {
   return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
@@ -105,10 +104,8 @@ export function stdev(xs) {
   return Math.sqrt(mean(xs.map((x) => (x - m) ** 2)));
 }
 
-/**
- * Доверительный интервал Уилсона для доли — winrate по 30 прогонам без него
- * читается как точное число, хотя это шум.
- */
+/** Wilson confidence interval for a proportion. Without it, a noisy win rate
+ * from 30 runs looks like an exact result. */
 export function wilson(successes, total, z = 1.96) {
   if (!total) return { p: 0, lo: 0, hi: 0 };
   const p = successes / total;
@@ -118,15 +115,12 @@ export function wilson(successes, total, z = 1.96) {
   return { p, lo: Math.max(0, (c - s) / d), hi: Math.min(1, (c + s) / d) };
 }
 
-/**
- * Отсеивает шум, который есть у любой игры-одностраничника и не является
- * дефектом: отсутствующий favicon и парный к нему console.error без URL.
- * Настоящие сетевые сбои проходят фильтр насквозь.
- */
+/** Filter normal single-page-game noise: a missing favicon and its URL-less
+ * console.error companion. Genuine network failures remain visible. */
 export function filterNoise(errors) {
   const noisy = (e) => /favicon\.ico/.test(e.text)
-    // SwiftShader в headless сыплет предупреждениями драйвера — это про
-    // окружение замера, а не про игру.
+    // Headless SwiftShader driver warnings describe the measurement environment,
+    // not the game.
     || /GL Driver Message|GPU stall|SwiftShader|Automatic fallback to software WebGL/i.test(e.text);
   const realNetwork = errors.filter((e) => (e.kind === 'http' || e.kind === 'requestfailed') && !noisy(e));
   return errors.filter((e) => {

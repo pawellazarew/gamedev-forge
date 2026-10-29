@@ -15,46 +15,46 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Установить зависимости
+      - name: Install dependencies
         working-directory: game-forge
         run: npm ci
 
-      - name: Скачать Chromium
+      - name: Download Chromium
         working-directory: game-forge
         run: npx playwright-core install --with-deps chromium
 
-      - name: Синтаксис всех модулей
+      - name: Check module syntax
         run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/*/forge.config.mjs fixtures/*/forge/*.mjs; do node --check "$f"; done
 
-      - name: Синтаксис shell и python
+      - name: Check shell and Python syntax
         run: |
           bash -n blender-kit/*.sh install.sh
           python3 -m py_compile blender-kit/*.py
 
-      - name: Юнит-тесты
+      - name: Unit tests
         working-directory: game-forge
         run: npm run test:unit
 
       - name: doctor
         run: node game-forge/bin/forge.mjs doctor
 
-      # Фикстура — эталонная игра с минимальным адаптером: если конвейер цел,
-      # сценарий проходит, probe чистый, а ветеран обыгрывает казуала.
-      - name: play (сценарии + ассерты)
+      # The fixture is a reference game with a minimal adapter: a healthy pipeline
+      # passes scenarios and probe, and its veteran outperforms its casual bot.
+      - name: play (scenarios and assertions)
         run: node game-forge/bin/forge.mjs play fixtures/tiny-game
 
-      - name: probe (метрики и ошибки консоли)
+      - name: probe (metrics and console errors)
         run: node game-forge/bin/forge.mjs probe fixtures/tiny-game --seconds 4 --strict
 
-      # Зелёный probe на здоровой игре ничего не доказывает, пока не показано,
-      # что сломанную он валит. dead-game не крутит rAF вовсе; zombie-game
-      # крутит пустой (кадры игры полны, отрисовки нет); ghost-backbuffer
-      # рисует каждый кадр в невидимый буфер.
+      # A passing probe on a healthy game proves nothing until it also rejects
+      # broken games. dead-game has no rAF loop; zombie-game runs an empty loop
+      # (game frames exist but nothing is drawn); ghost-backbuffer draws each
+      # frame into an invisible backbuffer.
       #
-      # Требуем именно код 2 (красный вердикт) и имя провалившейся проверки:
-      # «любой ненулевой код» означал бы, что опечатка в пути к фикстуре или
-      # ненайденный браузер читаются как «гейт сработал».
-      - name: probe обязан валить мёртвый рендер
+      # Require exactly exit code 2 (failed verdict) and the failed check name:
+      # accepting any nonzero exit would mistake a typo in the fixture path or
+      # a missing browser for a working gate.
+      - name: probe must reject dead rendering
         run: |
           check_red() {
             set +e
@@ -62,56 +62,56 @@ jobs:
             code=$?
             set -e
             if [ "$code" -ne 2 ]; then
-              echo "::error::probe на $1 вышел с кодом $code вместо 2 — гейт не сработал или вовсе не запустился"
+              echo "::error::probe on $1 exited with $code instead of 2 — gate failed or did not run"
               exit 1
             fi
-            # Сверяем и текст: без него фикстура могла бы краснеть по другой
-            # причине, чем задумано, и никто бы этого не заметил.
+            # Check the diagnostic too: otherwise a fixture could fail for the wrong
+            # reason without anyone noticing.
             node -e '
               const fs = require("fs");
               const [game, want, phrase] = process.argv.slice(1);
               const p = JSON.parse(fs.readFileSync(`fixtures/${game}/.forge/latest-probe/probe.json`, "utf8"));
               const c = p.checks.find((c) => c.name === want);
               if (p.verdict !== "fail" || c?.status !== "fail") {
-                console.error(`::error::${game}: ожидали красную проверку "${want}", получили verdict=${p.verdict} ${want}=${c?.status}`);
+                console.error(`::error::${game}: expected failed check "${want}", got verdict=${p.verdict} ${want}=${c?.status}`);
                 process.exit(1);
               }
               if (phrase && !c.detail.includes(phrase)) {
-                console.error(`::error::${game}: проверка "${want}" красная не по той причине — ждали «${phrase}», получили «${c.detail}»`);
+                console.error(`::error::${game}: check "${want}" failed for the wrong reason — expected «${phrase}», got «${c.detail}»`);
                 process.exit(1);
               }
             ' "$1" "$2" "$3"
           }
-          check_red dead-game        sample 'не нарисовала ни одного кадра'
-          check_red zombie-game      render 'рендер мёртв'
-          check_red ghost-backbuffer render 'рендер мёртв'
-          check_red dying-render     render 'отрисовка встала'
+          check_red dead-game        sample 'did not draw a single frame'
+          check_red zombie-game      render 'rendering is dead'
+          check_red ghost-backbuffer render 'rendering is dead'
+          check_red dying-render     render 'rendering stopped'
 
-      # Обратная сторона: здоровая игра необычной формы обязана проходить.
-      # Ложный красный блокирует работу так же надёжно, как ложный зелёный её
-      # пропускает, и за время работы над этим гейтом ловился дважды.
-      #   late-canvas    — канвас появляется после заставки
-      #   dirty-render   — рисует только по вводу, rAF не заводит вовсе
-      #   settling-intro — доиграл анимацию и ждёт ввода (титул, пауза, победа)
-      #   hud-first      — индикатор объявлен раньше игрового канваса
-      - name: probe не должен валить здоровые игры
+      # The other side: healthy games with unusual render patterns must pass.
+      # A false failure blocks work as reliably as a false pass lets defects
+      # through. We encountered this twice while developing this gate.
+      #   late-canvas    — canvas appears after the splash screen
+      #   dirty-render   — draws only on input and has no rAF loop
+      #   settling-intro — animation finishes and waits for input (title/pause/win)
+      #   hud-first      — HUD is declared before the game canvas
+      - name: probe must accept healthy games
         run: |
           for game in late-canvas dirty-render settling-intro hud-first; do
             node game-forge/bin/forge.mjs probe "fixtures/$game" --seconds 3 --strict
           done
 
-      # DOM-клик проходит сквозь перекрывающий слой, поэтому сценарий на нём
-      # зеленел на неиграбельной игре. Фикстура держит обе половины: свободная
-      # кнопка обязана проходить мышью и касанием, перекрытая — краснеть с
-      # именем перекрывающего слоя.
-      - name: play обязан ловить перекрытую кнопку
+      # DOM clicks pass through overlays, so their scenarios passed even when
+      # the game was unplayable. The fixture checks both sides: an unobstructed
+      # button must work with mouse and touch, while a covered button must fail
+      # and identify the covering layer.
+      - name: play must detect covered buttons
         run: |
           set +e
           node game-forge/bin/forge.mjs play fixtures/covered-button
           code=$?
           set -e
           if [ "$code" -ne 2 ]; then
-            echo "::error::play на covered-button вышел с кодом $code вместо 2"
+            echo "::error::play on covered-button exited with $code instead of 2"
             exit 1
           fi
           node -e '
@@ -119,33 +119,33 @@ jobs:
             const p = JSON.parse(fs.readFileSync("fixtures/covered-button/.forge/latest-play/play.json", "utf8"));
             const st = Object.fromEntries(p.scenarios.map((s) => [s.scenario, s]));
             for (const n of ["click-ok", "tap-ok", "opted-out"]) {
-              if (st[n]?.status !== "pass") { console.error(`::error::${n} обязан проходить, получили ${st[n]?.status}`); process.exit(1); }
+              if (st[n]?.status !== "pass") { console.error(`::error::${n} must pass, got ${st[n]?.status}`); process.exit(1); }
             }
             for (const n of ["second-click-covered", "dom-click-hides-it", "hittable@desktop", "hittable@phoneLandscape", "hittable@phone"]) {
               const bad = st[n]?.checks.find((c) => c.status === "fail");
               if (!bad || !bad.detail.includes("div#art")) {
-                console.error(`::error::${n} обязан краснеть с именем перекрывающего слоя, получили ${JSON.stringify(bad)}`);
+                console.error(`::error::${n} must fail and name the covering layer, got ${JSON.stringify(bad)}`);
                 process.exit(1);
               }
             }
           '
 
-      - name: sim + analyze (детерминированная симуляция)
+      - name: sim + analyze (deterministic simulation)
         run: node game-forge/bin/forge.mjs sim fixtures/tiny-game --runs 8 --max-ticks 20000
 
-      - name: Сквозные тесты конвейера
+      - name: End-to-end pipeline tests
         working-directory: game-forge
         run: node --test --test-timeout 300000 test/e2e-*.test.mjs
 
-      - name: Навык должен влиять на исход
+      - name: Skill must affect the outcome
         run: |
           node -e '
             const fs = require("fs");
             const a = JSON.parse(fs.readFileSync("fixtures/tiny-game/.forge/latest-sim/analysis.json", "utf8"));
             const get = (n) => a.bots.find((b) => b.bot === n)?.winrate ?? 0;
             const gap = get("veteran") - get("casual");
-            console.log("casual", get("casual"), "veteran", get("veteran"), "разрыв", gap.toFixed(2));
-            if (gap < 0) { console.error("ветеран играет хуже казуала — конвейер или бот сломан"); process.exit(1); }
+            console.log("casual", get("casual"), "veteran", get("veteran"), "gap", gap.toFixed(2));
+            if (gap < 0) { console.error("veteran performs worse than casual — pipeline or bot is broken"); process.exit(1); }
           '
 
       - uses: actions/upload-artifact@v5
@@ -153,7 +153,7 @@ jobs:
         with:
           name: forge-artifacts
           path: fixtures/tiny-game/.forge/
-          # Каталог начинается с точки, а upload-artifact по умолчанию скрытые
-          # файлы пропускает — без этого флага артефакты молча теряются
+          # The directory starts with a dot. upload-artifact skips hidden files
+          # by default, silently losing the artifacts without this flag.
           include-hidden-files: true
           retention-days: 7

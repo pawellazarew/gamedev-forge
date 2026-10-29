@@ -1,11 +1,11 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Dead Game (фикстура)</title>
+<title>Dead Game (fixture)</title>
 <!--
-  Игра, которая нарисовала один кадр и умерла: цикл рендера не запущен.
-  На скриншоте она выглядит живой (картинка есть, цвета есть), а кадров игры
-  ноль. Проба при этом крутит СВОЙ requestAnimationFrame и насчитывает
-  десятки кадров — на этом и ловилась зелёная проверка выборки.
+  A game that draws one frame and dies: its render loop never starts.
+  It looks alive in a screenshot (image and colors exist), but has zero game
+  frames. Meanwhile the probe runs its OWN requestAnimationFrame and counts
+  dozens of frames; this exposed a false pass in the sample check.
 -->
 <style>
   html, body { margin: 0; height: 100%; background: #0b0e14; }
@@ -22,6 +22,6 @@
   }
   ctx.fillStyle = '#e6edf3';
   ctx.font = '20px sans-serif';
-  ctx.fillText('кадр нарисован один раз', 20, 380);
-  // И никакого requestAnimationFrame: цикл рендера не запускается вовсе.
+  ctx.fillText('one frame drawn', 20, 380);
+  // No requestAnimationFrame: the render loop never starts.
 </script>

@@ -1,70 +1,72 @@
 ---
 name: sprite-baking
-description: Печёт 2D-спрайты и спрайтшиты из 3D-моделей Blender — изометрия, 8/16 направлений, кадры анимации, прозрачный фон, атлас + JSON под Phaser 3. Используй когда нужны спрайты для 2D-игры, «сделай персонажа/здание/технику», анимация ходьбы, изометрические тайлы, ассеты без художника, или когда рисовать вручную дороже, чем собрать из примитивов. Инструмент: tools/blender-kit.
+description: "Bake 2D sprites and sprite sheets from Blender 3D models: isometric views, 8/16 directions, animation frames, transparent backgrounds and a Phaser 3 atlas with JSON. Use for 2D game characters, buildings, vehicles, walk animations, isometric tiles or assets without an artist, when building primitives is cheaper than drawing by hand. Tool: tools/blender-kit."
 ---
 
 # Sprite Baking
 
-3D-модель → атлас спрайтов. Способ получать согласованные ассеты без художника:
-модель делается один раз, а направления, кадры и ракурсы — бесплатно.
+3D model → sprite atlas. Build a model once to get consistent assets across
+all directions, frames and views without redrawing them.
 
-Инструмент: `tools/blender-kit/`. Blender 5.1.1 стоит в `/Applications/Blender.app`.
+Tool: `tools/blender-kit/`. Blender 5.1.1 is installed at `/Applications/Blender.app`.
 
-## Быстрый старт
+## Quick start
 
 ```bash
 cd tools/blender-kit
 
-# демо-мишень: робот из примитивов с анимацией шага
+# Demo model: a primitive robot with a walk animation
 ./blend.sh demo_robot.py -- --out /tmp/robot.blend
 
-# 8 направлений × 8 кадров, изометрия, 96px
+# 8 directions × 8 frames, isometric, 96px
 ./blend.sh bake_sprites.py --blend /tmp/robot.blend -- \
   --out assets/robot --anim walk --dirs 8 --frames 1-24 --step 3 --size 96 --elevation 30
 
-# посмотреть модель глазами: 4 ракурса в одном PNG
+# Inspect the model: four views in one PNG
 ./blend.sh render_preview.py --blend /tmp/robot.blend -- --out /tmp/preview.png
 ```
 
-Выход: `assets/robot.png` + `assets/robot.json` (формат `this.load.atlas()`).
+Output: `assets/robot.png` + `assets/robot.json` (`this.load.atlas()` format).
 
-## Ключи bake_sprites.py
+## bake_sprites.py options
 
-| Ключ | Смысл |
+| Option | Meaning |
 |---|---|
-| `--import file.glb` | подтянуть GLB/FBX/OBJ вместо `.blend` |
-| `--object Name` | рендерить один объект или коллекцию |
-| `--dirs 8` | направлений по кругу; `1` — один ракурс |
-| `--elevation 30` | 30 — изометрия, 0 — вид сбоку, 90 — сверху |
-| `--frames 1-24 --step 3` | какие кадры анимации брать |
-| `--size 96 --ss 3` | итоговый размер и суперсэмплинг |
-| `--quantize 8` | пиксель-арт: ступеней цвета на канал, жёсткая альфа |
-| `--anim walk` | префикс имён кадров в атласе |
-| `--keep-frames` | не удалять отдельные PNG |
+| `--import file.glb` | import GLB/FBX/OBJ instead of loading a `.blend` |
+| `--object Name` | render one object or collection |
+| `--dirs 8` | directions around the model; `1` means one view |
+| `--elevation 30` | 30 = isometric, 0 = side view, 90 = top view |
+| `--frames 1-24 --step 3` | animation frames to sample |
+| `--size 96 --ss 3` | final frame size and supersampling factor |
+| `--quantize 8` | pixel-art effect: color levels per channel and binary alpha |
+| `--anim walk` | atlas frame-name prefix |
+| `--keep-frames` | retain individual PNGs |
 
-## Что важно знать
+## Important details
 
-- **Ортокамера обязательна** (скрипт ставит её сам). В перспективе спрайты
-  разных направлений не совпадают по размеру — персонаж «дышит» при повороте.
-- **Суперсэмплинг решает края.** Рендер в 3–4× с последующим box-фильтром даёт
-  чистый контур; прямой рендер в 96px — рваный. Даунсемпл премультиплицирует
-  альфу, иначе по краю появляется светящийся ореол.
-- **Направление 0 = камера со стороны +X.** Дальше по часовой стрелке через
-  `--start-angle`. В игре: `frame = Math.round(angle / (2π/dirs)) % dirs`.
-- **Свет ставится автоматически**, если в сцене нет ламп — иначе спрайт
-  выходит чёрным силуэтом.
-- **8 направлений — минимум для движения**, 16 — если персонаж крупный и
-  поворот заметен. Для видов сверху/сбоку хватает 1.
-- Строгий пиксель-арт из 3D не выходит «сам»: `--quantize` даёт стилизацию,
-  но настоящий пиксель-арт требует ручной доработки. Для чистого low-poly
-  и изометрии результат готов к употреблению.
+- **Use an orthographic camera** (the script creates one). Perspective makes
+  sprite dimensions inconsistent between directions, so a turning character
+  appears to expand and shrink.
+- **Supersampling cleans up edges.** Rendering at 3–4× and applying a box filter
+  produces a clean outline; direct 96px rendering looks jagged. Downsampling
+  premultiplies alpha to avoid glowing edge halos.
+- **Direction 0 puts the camera on +X.** Subsequent directions advance clockwise
+  through `--start-angle`. In-game:
+  `frame = Math.round(angle / (2π/dirs)) % dirs`.
+- **Lights are added automatically** when the scene has none, avoiding a black
+  silhouette.
+- **Use at least 8 directions for movement**, or 16 for a large character whose
+  turning is conspicuous. One direction can be enough for top or side views.
+- Strict pixel art does not emerge automatically from 3D. `--quantize` gives
+  stylization, but genuine pixel art requires manual cleanup. Clean low-poly
+  and isometric renders can be ready to use directly.
 
-## Подключение в Phaser 3
+## Phaser 3 integration
 
 ```js
 this.load.atlas('robot', 'assets/robot.png', 'assets/robot.json');
 
-// meta.forge.animations уже содержит списки кадров по направлениям
+// meta.forge.animations already groups frame lists by direction
 const meta = this.cache.json.get('robot').meta.forge;
 Object.entries(meta.animations).forEach(([key, frames]) => {
   this.anims.create({ key, frames: frames.map(f => ({ key: 'robot', frame: f })), frameRate: 12, repeat: -1 });
@@ -72,16 +74,15 @@ Object.entries(meta.animations).forEach(([key, frames]) => {
 sprite.play('walk_d2');
 ```
 
-## Когда НЕ стоит
+## When to choose another approach
 
-- Нужен один статичный значок — быстрее нарисовать или сгенерировать
-  (скилл `imagen`).
-- Стиль игры — рисованный 2D: рендер из 3D будет выбиваться.
-- Ассет нужен «примерно сейчас, качество неважно» — сборка сцены в Blender
-  дороже разового рисунка.
+- For one static icon, drawing or generating it is quicker (`imagen` skill).
+- A hand-drawn 2D game may clash visually with a 3D render.
+- If an asset is needed immediately and quality is unimportant, setting up a
+  Blender scene costs more than a one-off drawing.
 
-## Смежное
+## Related tools
 
-- Моделирование в Blender, ловушки 5.x API → скилл `blender-hardsurface`
-- Проверка ассета в игре → скилл `game-forge` (`forge shots` + `game-art-critic`)
-- Растровая генерация без 3D → скилл `imagen`
+- Blender modeling and 5.x API pitfalls → `blender-hardsurface` skill
+- In-game asset inspection → `game-forge` (`forge shots` + `game-art-critic`)
+- Raster generation without 3D → `imagen` skill

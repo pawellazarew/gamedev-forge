@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { computeMetrics, evaluateBudgets, prepareScene, probe, MIN_FRAMES } from '../src/probe.mjs';
 import { resolveViewport } from '../src/browser.mjs';
 
-/** Сырьё в том виде, в каком его отдаёт страница. */
+/** Raw data in the format returned by the page. */
 const raw = ({
   work = Array(100).fill(1), draws = Array(100).fill(5), drawsMax = 5,
   frames = 100, gameFrames = frames, paintFrames = gameFrames, lastPaintAt = frames,
@@ -18,62 +18,62 @@ const raw = ({
 const cfg = (budgets = {}) => ({ name: 'T', renderer: '2d', budgets });
 const opts = { viewport: 'desktop', seconds: 4 };
 
-describe('бюджет draw calls', () => {
-  test('пик ловится, даже когда среднее крошечное', () => {
-    // Ровно repro из ревью: один кадр на 600 вызовов среди 99 дешёвых.
-    // Среднее ≈ 12, и по нему бюджет 150 «проходил» бы.
+describe('budget draw calls', () => {
+  test('catches a peak even with a tiny average', () => {
+    // Exact review reproduction: one frame with 600 calls among 99 cheap frames.
+    // The average is about 12, which would pass a budget of 150.
     const draws = [...Array(99).fill(6), 600];
     const m = computeMetrics(raw({ draws, drawsMax: 600, frames: 100, drawsTotal: 1194 }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
-    assert.equal(m.drawCallsAvg, 12, 'среднее действительно маленькое');
+    assert.equal(m.drawCallsAvg, 12, 'the average really is small');
     assert.equal(m.drawCallsMax, 600);
-    // Один кадр из ста — это ровно 1% выборки, и p99 его теряет.
-    // Поэтому гейт смотрит на максимум: игрок этот фриз увидит.
+    // One frame out of 100 is exactly 1% of the sample, and p99 misses it.
+    // The gate therefore uses the maximum: players will notice the stall.
     assert.equal(m.checks.find((c) => c.name === 'draw-calls').status, 'fail');
     assert.equal(m.verdict, 'fail');
   });
 
-  test('ровный профиль в пределах бюджета проходит', () => {
+  test('a steady profile within budget passes', () => {
     const m = computeMetrics(raw({ draws: Array(100).fill(80), drawsMax: 80, frames: 100, drawsTotal: 8000 }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
     assert.equal(m.checks.find((c) => c.name === 'draw-calls').status, 'pass');
   });
 
-  test('единственный тяжёлый кадр среди сотни всё равно валит бюджет', () => {
-    // Отдельная проверка именно на границе, где p99 бесполезен
+  test('a single heavy frame among 100 still fails the budget', () => {
+    // Separate boundary check where p99 is useless
     const draws = [...Array(99).fill(10), 400];
     const m = computeMetrics(raw({ draws, drawsMax: 400, frames: 100, drawsTotal: 1390 }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
-    assert.equal(m.drawCallsP99, 10, 'p99 действительно не видит этот кадр');
+    assert.equal(m.drawCallsP99, 10, 'p99 really misses this frame');
     assert.equal(m.checks.find((c) => c.name === 'draw-calls').status, 'fail');
   });
 
-  test('превышение в полтора раза — предупреждение, не провал', () => {
+  test('exceeding the budget by a factor of 1.5 warns rather than fails', () => {
     const m = computeMetrics(raw({ draws: Array(100).fill(200), drawsMax: 200, frames: 100, drawsTotal: 20000 }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
     assert.equal(m.checks.find((c) => c.name === 'draw-calls').status, 'warn');
   });
 
-  test('без бюджета проверки нет — 2D-играм она бессмысленна', () => {
+  test('without a budget there is no check; it is meaningless for 2D games', () => {
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}) });
     assert.equal(m.checks.find((c) => c.name === 'draw-calls'), undefined);
   });
 });
 
 describe('headroom', () => {
-  test('считается от настроенного бюджета, а не от 16.7', () => {
-    // 3D-прототипы задают frameMs: 8 — при 10 мс работы запаса уже нет
+  test('uses the configured budget rather than 16.7', () => {
+    // 3D-prototypes set frameMs: 8; 10 ms of work leaves no headroom
     const m = computeMetrics(raw({ work: Array(10).fill(10) }), { ...opts, cfg: cfg({ frameMs: 8 }) });
     assert.equal(m.budgetMs, 8);
-    assert.ok(m.headroom < 1, `запас ×${m.headroom} — при бюджете 8 мс и работе 10 мс его нет`);
+    assert.ok(m.headroom < 1, `headroom ×${m.headroom}: 10 ms of work exceeds the 8 ms budget`);
     assert.equal(m.checks.find((c) => c.name === 'frame-work').status, 'warn');
   });
 
-  test('умолчание 16.7 сохраняется, когда бюджет не задан', () => {
+  test('default 16.7 is retained when no budget is configured', () => {
     const m = computeMetrics(raw({ work: Array(10).fill(1) }), { ...opts, cfg: cfg({}) });
     assert.equal(m.budgetMs, 16.7);
     assert.equal(m.headroom, 16.7);
@@ -89,87 +89,87 @@ describe('evaluateBudgets', () => {
     longFrameRatio: 0, pixelChange: 0.02, seconds: 4,
   };
 
-  test('софтверный WebGL понижает провал по кадру до предупреждения', () => {
+  test('software WebGL downgrades frame failure to warning', () => {
     const hard = evaluateBudgets({ ...base, frameWorkMs: 100, softwareGl: false }, { frameMs: 16.7 });
     const soft = evaluateBudgets({ ...base, frameWorkMs: 100, softwareGl: true }, { frameMs: 16.7 });
     assert.equal(hard.find((c) => c.name === 'frame-work').status, 'fail');
     assert.equal(soft.find((c) => c.name === 'frame-work').status, 'warn');
-    assert.match(soft.find((c) => c.name === 'frame-work').detail, /софтверный WebGL/);
+    assert.match(soft.find((c) => c.name === 'frame-work').detail, /software WebGL/);
   });
 
-  test('мёртвый кадр — провал', () => {
+  test('dead frame fails', () => {
     const checks = evaluateBudgets({ ...base, canvas: { distinctColors: 1, minLum: 0, maxLum: 0 } }, {});
     assert.equal(checks.find((c) => c.name === 'frame-alive').status, 'fail');
   });
 
-  test('ошибка декодирования кадра не выдаётся за мёртвый кадр', () => {
-    const checks = evaluateBudgets({ ...base, canvas: { error: 'не PNG' } }, {});
+  test('frame decoding errors are not reported as dead frames', () => {
+    const checks = evaluateBudgets({ ...base, canvas: { error: 'not PNG' } }, {});
     assert.equal(checks.find((c) => c.name === 'frame-alive'), undefined);
   });
 });
 
-describe('достаточность выборки', () => {
+describe('sample sufficiency', () => {
   const sample = (m) => m.checks.find((c) => c.name === 'sample');
 
-  test('ноль кадров — провал, а не зелёный прогон', () => {
-    // Repro из ревью: `--seconds 0` давал PASS, 0/0 кадров и код выхода 0,
-    // то есть performance gate, который проходит любая игра.
+  test('zero frames fail rather than pass', () => {
+    // Repro from review: `--seconds 0` gave PASS, 0/0 frames and exit code 0,
+    // creating a performance gate that any game could pass.
     const empty = raw({ work: [], draws: [], drawsMax: 0, frames: 0, drawsTotal: 0, times: [] });
     const m = computeMetrics(empty, { ...opts, seconds: 0.001, cfg: cfg({ drawCalls: 150 }) });
 
     assert.equal(m.frames, 0);
-    assert.equal(m.frameWorkMs, 0, 'нулевая работа сама по себе выглядит идеально');
-    // Раньше она печаталась как PASS: ноль миллисекунд укладывается в любой
-    // бюджет, и под красным sample стоял частокол зелёных проверок.
+    assert.equal(m.frameWorkMs, 0, 'zero work alone looks perfect');
+    // Previously printed as PASS: zero milliseconds fits any
+    // budget, showing many passing checks below a failing sample check.
     assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined,
-      'чисел кадра без кадров не существует — молчание честнее');
+      'frame metrics do not exist without frames; omission is more honest');
     assert.equal(m.checks.find((c) => c.name === 'draw-calls'), undefined);
     assert.equal(sample(m).status, 'fail');
-    assert.equal(m.verdict, 'fail', 'вердикт обязан краснеть на пустом замере');
+    assert.equal(m.verdict, 'fail', 'empty measurements must fail the verdict');
   });
 
-  test('мёртвый цикл рендера ловится, хотя кадры пробы идут', () => {
-    // Второе ревью: проба крутит СВОЙ rAF и насчитывает кадры странице,
-    // которая нарисовала один раз и больше не перерисовывается.
-    // Кадры пробы для гейта поэтому не годятся — считаем кадры игры.
+  test('detects a dead render loop even while probe frames continue', () => {
+    // Second review: the probe runs its OWN rAF and counts frames for a page,
+    // that rendered once and never redraws.
+    // Probe frames cannot validate this gate; count game frames.
     const dead = raw({ work: Array(90).fill(0), frames: 90, gameFrames: 0 });
     const m = computeMetrics(dead, { ...opts, seconds: 3, cfg: cfg({}) });
 
-    assert.equal(m.frames, 90, 'кадры пробы идут');
-    assert.equal(m.gameFrames, 0, 'а игра не нарисовала ни одного');
-    assert.equal(m.workSamples, 90, 'замеры работы при этом «есть» — все нулевые');
+    assert.equal(m.frames, 90, 'probe frames continue');
+    assert.equal(m.gameFrames, 0, 'but the game rendered none');
+    assert.equal(m.workSamples, 90, 'work samples exist but are all zero');
     assert.equal(sample(m).status, 'fail');
-    assert.match(sample(m).detail, /не нарисовала ни одного кадра/);
+    assert.match(sample(m).detail, /did not draw a single frame/);
     assert.equal(m.verdict, 'fail');
   });
 
-  test('кадры есть, а замеров работы нет — тоже провал, и причина другая', () => {
-    // Все значения work отфильтрованы как невалидные: счётчик сломан.
+  test('frames without work samples also fail, for a different reason', () => {
+    // All work values were filtered as invalid: instrumentation is broken.
     const m = computeMetrics(raw({ work: Array(50).fill(9e9), frames: 50 }), { ...opts, cfg: cfg({}) });
     assert.equal(m.workSamples, 0);
     assert.equal(sample(m).status, 'fail');
-    assert.match(sample(m).detail, /инструментирование кадра сломано/);
-    assert.doesNotMatch(sample(m).detail, /--seconds/, 'совет поднять --seconds тут лечит не то');
+    assert.match(sample(m).detail, /frame instrumentation is broken/);
+    assert.doesNotMatch(sample(m).detail, /--seconds/, 'increasing --seconds would address the wrong issue');
     assert.equal(m.verdict, 'fail');
   });
 
-  test('честный on-demand без rAF — не поломка, а «стоимость кадра не измерена»', () => {
-    // Настоящий Wordle рисует в обработчике ввода и rAF не заводит вовсе:
-    // кадров игры ноль по определению. renderMode этого не спасал — sample
-    // требовал пять кадров независимо от режима, и здоровая игра краснела.
+  test('true on-demand without rAF is not broken; frame cost is unmeasured', () => {
+    // Wordle draws inside input handlers and never starts rAF:
+    // there are no game frames by definition. renderMode did not prevent this; sample
+    // required five frames regardless of mode, failing a healthy game.
     const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
     const idle = raw({ work: Array(120).fill(0), frames: 120, gameFrames: 0, paintFrames: 0, lastPaintAt: 0 });
     const m = computeMetrics(idle, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
 
     assert.equal(sample(m).status, 'warn');
-    assert.match(sample(m).detail, /рисует по событию/);
-    assert.notEqual(m.verdict, 'fail', 'здоровая пошаговая игра не должна валить CI');
-    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'стоимости кадра тут нет');
+    assert.match(sample(m).detail, /draws on events/);
+    assert.notEqual(m.verdict, 'fail', 'a healthy turn-based game must not fail CI');
+    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'there is no frame cost here');
   });
 
-  test('on-demand не милует оборвавшийся цикл: пара кадров — это поломка', () => {
-    // Помилование ровно на один случай — цикла не было вовсе. Один-четыре
-    // кадра означают, что цикл был и умер, а renderMode тут ни при чём.
+  test('on-demand does not excuse a broken loop: a few frames mean failure', () => {
+    // The exception applies only when no loop existed. One to four
+    // frames mean the loop started and died, regardless of renderMode.
     const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
     const m = computeMetrics(raw({ work: Array(200).fill(0.1), frames: 200, gameFrames: 3, paintFrames: 3, lastPaintAt: 3 }), {
       ...opts, seconds: 3, cfg: onDemand, pixelChange: 0,
@@ -178,9 +178,9 @@ describe('достаточность выборки', () => {
     assert.equal(m.verdict, 'fail');
   });
 
-  test('но нулевое окно замера остаётся провалом и для on-demand', () => {
-    // «Игра рисует по событию» не оправдывает `--seconds 0`: это уже не про
-    // игру, а про то, что замера не было.
+  test('but a zero measurement window still fails for on-demand', () => {
+    // Event-driven rendering does not justify `--seconds 0`: this concerns the
+    // missing measurement, not the game.
     const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
     const m = computeMetrics(raw({ work: [], draws: [], frames: 0, gameFrames: 0, paintFrames: 0, times: [] }), {
       ...opts, seconds: 0.001, cfg: onDemand,
@@ -189,24 +189,24 @@ describe('достаточность выборки', () => {
     assert.equal(m.verdict, 'fail');
   });
 
-  test('кадров впритык — предупреждение: число есть, доверия нет', () => {
+  test('barely enough frames warns: a number without confidence', () => {
     const thin = raw({ work: Array(8).fill(1), draws: Array(8).fill(5), frames: 8, times: Array(8).fill(8.3) });
     const m = computeMetrics(thin, { ...opts, seconds: 0.2, cfg: cfg({}) });
     assert.equal(sample(m).status, 'warn');
     assert.equal(m.verdict, 'warn');
-    assert.match(sample(m).detail, /выборка тоньше/);
+    assert.match(sample(m).detail, /sample below 20 frames/);
   });
 
-  test('обрезанная выборка на длинном прогоне — предупреждение', () => {
-    // Счётчики работы копятся до 4000 записей, а кадры считаются дальше:
-    // медиана и p99 описывают начало окна, а не весь прогон.
+  test('a truncated sample on a long run warns', () => {
+    // Work counters stop collecting at 4000 entries, while frames keep counting:
+    // median and p99 describe the start of the window, not the whole run.
     const soak = raw({ work: Array(4000).fill(1), draws: Array(4000).fill(5), frames: 5400, times: Array(4000).fill(8.3) });
     const m = computeMetrics(soak, { ...opts, seconds: 120, cfg: cfg({}) });
     assert.equal(sample(m).status, 'warn');
-    assert.match(sample(m).detail, /начало окна/);
+    assert.match(sample(m).detail, /start of the window/);
   });
 
-  test('полноценная выборка проходит и попадает в метрики', () => {
+  test('a complete sample passes and populates metrics', () => {
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}) });
     assert.equal(m.workSamples, 100);
     assert.equal(m.frameSamples, 100);
@@ -215,7 +215,7 @@ describe('достаточность выборки', () => {
     assert.equal(m.verdict, 'pass');
   });
 
-  test('граница MIN_FRAMES проверяется, а не подразумевается', () => {
+  test('the MIN_FRAMES boundary is tested explicitly', () => {
     const at = (frames) => computeMetrics(
       raw({ work: Array(frames).fill(1), draws: Array(frames).fill(5), frames, times: Array(frames).fill(8.3) }),
       { ...opts, cfg: cfg({}) },
@@ -224,47 +224,47 @@ describe('достаточность выборки', () => {
     assert.notEqual(sample(at(MIN_FRAMES)).status, 'fail');
   });
 
-  test('probe.json без gameFrames (прогон до этой правки) читается по-старому', () => {
+  test('probe.json without gameFrames (older run) uses the legacy interpretation', () => {
     const legacy = { frames: 100, workSamples: 100, frameSamples: 100, seconds: 4, frameWorkMs: 1, frameWorkP99Ms: 2, errorCount: 0, errors: [] };
     assert.equal(evaluateBudgets(legacy, {}).find((c) => c.name === 'sample').status, 'pass');
   });
 });
 
-describe('живой цикл против живого рендера', () => {
+describe('live loop versus live renderer', () => {
   const render = (m) => m.checks.find((c) => c.name === 'render');
-  /** Зомби: rAF вызывается каждый кадр и не рисует ничего. */
+  /** Zombie: rAF runs every frame without drawing anything. */
   const zombie = raw({ frames: 359, gameFrames: 359, paintFrames: 0, work: Array(359).fill(0.01), times: Array(359).fill(8.3) });
 
-  test('пустой rAF не считается отрисовкой', () => {
-    // Из ревью: пустой `requestAnimationFrame(loop)` давал 143/143 кадров игры
-    // и зелёный вердикт на застывшей картинке. Кадров игры для гейта мало.
+  test('empty rAF is not counted as rendering', () => {
+    // From review: an empty `requestAnimationFrame(loop)` gave 143/143 game frames
+    // and a passing verdict on a frozen image. Game frames alone are insufficient.
     const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0 });
 
-    assert.equal(m.gameFrames, 359, 'цикл жив');
-    assert.equal(m.paintFrames, 0, 'а нарисовано ничего');
-    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'pass', 'по кадрам игры всё в порядке');
+    assert.equal(m.gameFrames, 359, 'the loop is alive');
+    assert.equal(m.paintFrames, 0, 'but nothing was drawn');
+    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'pass', 'game frame sampling is fine');
     assert.equal(render(m).status, 'fail');
-    assert.match(render(m).detail, /рендер мёртв/);
+    assert.match(render(m).detail, /rendering is dead/);
     assert.equal(m.verdict, 'fail');
   });
 
-  test('меняющиеся пиксели без команд рисования — предупреждение, не приговор', () => {
-    // Воркер, WebGPU, DOM/CSS: инструментирование их не видит, но игра живёт.
-    // Красный вердикт тут был бы враньём про игру.
+  test('changing pixels without draw commands warn rather than fail', () => {
+    // Workers, WebGPU, DOM/CSS: invisible to instrumentation, but the game is alive.
+    // Failing here would misrepresent the game.
     const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'warn');
-    assert.match(render(m).detail, /мимо 2D\/WebGL/);
+    assert.match(render(m).detail, /bypasses 2D\/WebGL/);
   });
 
-  test('пиксели не сравнивали — тоже не приговор', () => {
+  test('missing pixel comparisons do not prove failure', () => {
     const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: cfg({}) });
     assert.equal(m.pixelChange, null);
     assert.equal(render(m).status, 'warn');
   });
 
-  test('игра, рисующая по событию, не объявляется мёртвой', () => {
-    // Пошаговая игра (Wordle-подобная) за окно замера без ввода не рисует
-    // ничего — и это норма. Красный тут блокировал бы здоровую игру.
+  test('an event-driven game is not declared dead', () => {
+    // A turn-based game such as Wordle renders nothing during an idle measurement
+    // window; this is normal. Failing would block a healthy game.
     const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
     const m = computeMetrics(zombie, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
     assert.equal(render(m).status, 'warn');
@@ -272,104 +272,104 @@ describe('живой цикл против живого рендера', () => {
     assert.notEqual(m.verdict, 'fail');
   });
 
-  test('нормальная отрисовка проходит', () => {
+  test('normal rendering passes', () => {
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'pass');
-    assert.match(render(m).detail, /100 из 100 кадров игры/);
+    assert.match(render(m).detail, /100 of 100 game frames/);
   });
 
-  test('рисует каждый кадр, а пиксели не двигаются — пометка, но не жёлтый', () => {
-    // Так выглядит и «game over», и пауза, и спокойная сцена: игра честно
-    // перерисовывает одну и ту же картинку. Жёлтый тут кричал бы волками на
-    // каждом экране окончания — замерено на здоровой tiny-game.
+  test('drawing every frame without pixel changes adds a note, not a warning', () => {
+    // Game over, pause and quiet scenes all look like this: the game
+    // redraws the same image. Warning would cry wolf on
+    // every end screen, as measured with healthy tiny-game.
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}), pixelChange: 0 });
     assert.equal(render(m).status, 'pass');
-    assert.match(render(m).detail, /пиксели канваса не изменились/);
+    assert.match(render(m).detail, /canvas pixels did not change/);
   });
 
-  test('игра рисовала полноценно и встала — провал', () => {
-    // 61% кадров с отрисовкой: долевой гейт такое пропускал бы, потому что
-    // доля выше порога. Ловит только хвост окна.
+  test('full rendering followed by a stop fails', () => {
+    // 61% of frames rendered: a ratio gate would pass because
+    // the ratio exceeds the threshold. Only the window tail catches it.
     const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 440, lastPaintAt: 440 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
     assert.equal(render(m).status, 'fail');
-    assert.match(render(m).detail, /отрисовка встала/);
+    assert.match(render(m).detail, /rendering stopped/);
     assert.equal(m.verdict, 'fail');
   });
 
-  test('«рисует редко» и «рисовал и встал» различаются хвостом окна', () => {
-    // Доля кадров одинаковая — 5 из 720. Отличие только в том, когда была
-    // последняя отрисовка.
+  test('rare rendering and stopped rendering differ in the window tail', () => {
+    // The ratio is identical: 5 out of 720. Only the time of the
+    // last render differs.
     const stopped = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
     const rare = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 715 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0.02,
     });
-    assert.match(render(stopped).detail, /встала/);
-    assert.match(render(rare).detail, /по чему|перерисовывается/);
+    assert.match(render(stopped).detail, /stopped/);
+    assert.match(render(rare).detail, /judge|redraws/);
   });
 
-  test('игра, едва рисовавшая и вставшая, — предупреждение, а не провал', () => {
-    // Пять кадров и тишина — это и умерший рендер, и заставка, которая
-    // доиграла анимацию и ждёт ввода. Без синтетического ввода различить их
-    // нечем, а красный на титульном экране блокирует здоровую игру.
+  test('barely rendering and then stopping warns rather than fails', () => {
+    // Five frames then silence could be either a dead renderer or an intro
+    // that finished animating and awaits input. Without synthetic input they
+    // cannot be distinguished; failing on a title screen blocks a healthy game.
     const m = computeMetrics(raw({ frames: 720, gameFrames: 720, paintFrames: 5, lastPaintAt: 5 }), {
       ...opts, seconds: 12, cfg: cfg({}), pixelChange: 0,
     });
     assert.equal(render(m).status, 'warn');
-    assert.match(render(m).detail, /доиграл анимацию и ждёт ввода/);
+    assert.match(render(m).detail, /finished its animation and is waiting for input/);
   });
 
-  test('высокая доля не спасает, если отрисовка встала под конец', () => {
+  test('a high ratio does not excuse rendering stopping near the end', () => {
     const m = computeMetrics(raw({ frames: 360, gameFrames: 360, paintFrames: 221, lastPaintAt: 221 }), {
       ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0.02,
     });
     assert.equal(render(m).status, 'fail');
-    assert.match(render(m).detail, /встала/);
+    assert.match(render(m).detail, /stopped/);
   });
 
-  test('половина кадров с отрисовкой — уже жизнь', () => {
+  test('rendering half the frames counts as alive', () => {
     const m = computeMetrics(raw({ paintFrames: 60 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'pass');
   });
 
-  test('игра, рисующая урывками, — предупреждение', () => {
-    // Доля низкая, но кадров с отрисовкой достаточно, чтобы о ней судить.
+  test('intermittent rendering warns', () => {
+    // The ratio is low, but enough rendered frames exist to judge it.
     const m = computeMetrics(raw({ frames: 360, gameFrames: 360, paintFrames: 30, lastPaintAt: 355 }), {
       ...opts, cfg: cfg({}), pixelChange: 0.02,
     });
     assert.equal(render(m).status, 'warn');
-    assert.match(render(m).detail, /почти не перерисовывается/);
+    assert.match(render(m).detail, /barely redraws/);
   });
 
-  test('пара кадров отрисовки — «судить не по чему», а не «рисует урывками»', () => {
-    // Разные вещи: у одной есть цифра, у другой нет выборки. Раньше обе
-    // печатались одним текстом про долю, противореча собственным числам.
+  test('a few rendered frames mean insufficient evidence, not intermittent rendering', () => {
+    // These differ: one has a meaningful ratio, the other lacks a sample. Both
+    // previously printed the same ratio message, contradicting their numbers.
     const m = computeMetrics(raw({ paintFrames: 3, lastPaintAt: 98 }), { ...opts, cfg: cfg({}), pixelChange: 0.02 });
     assert.equal(render(m).status, 'warn');
-    assert.match(render(m).detail, /не по чему/);
+    assert.match(render(m).detail, /insufficient evidence/);
   });
 
-  test('без кадров игры проверка молчит, а не выдумывает крутящийся цикл', () => {
-    // dead-game: rAF не вызывается вовсе. «Цикл rAF крутится (0 кадров игры)» —
-    // это ложь в одну строку, и её видел бы человек и агент-критик.
+  test('without game frames the check stays silent rather than inventing a live loop', () => {
+    // dead-game: rAF is never called. Claiming a live rAF loop with 0 game frames
+    // would mislead both people and reviewer agents.
     const m = computeMetrics(raw({ frames: 90, gameFrames: 0, paintFrames: 0, work: Array(90).fill(0) }), {
       ...opts, seconds: 3, cfg: cfg({}), pixelChange: 0,
     });
-    assert.equal(render(m), undefined, 'про отрисовку сказать нечего');
-    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'fail', 'красное говорит sample');
+    assert.equal(render(m), undefined, 'nothing can be said about rendering');
+    assert.equal(m.checks.find((c) => c.name === 'sample').status, 'fail', 'failure is reported by sample');
   });
 
-  test('старый probe.json без paintFrames проверку не получает', () => {
+  test('old probe.json without paintFrames does not get this check', () => {
     const legacy = { frames: 100, gameFrames: 100, workSamples: 100, frameSamples: 100, frameWorkMs: 1, frameWorkP99Ms: 2, errorCount: 0, errors: [] };
     assert.equal(evaluateBudgets(legacy, {}).find((c) => c.name === 'render'), undefined);
   });
 
-  test('артефакт сорванного замера не выдумывает диагноз про рендер', () => {
-    // Раньше abort-артефакт утверждал «игра рисует мимо 2D/WebGL» — при том,
-    // что ни одного скриншота сравнено не было. Это уходило в отчёт и критику.
+  test('an aborted measurement does not invent a rendering diagnosis', () => {
+    // Previously the abort artifact claimed rendering outside 2D/WebGL despite,
+    // having compared no screenshots. The report and critique inherited it.
     const m = computeMetrics(
       { frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0, gameFrames: 0, paintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0, elapsedMs: 0, heapBytes: null, state: null },
       { ...opts, cfg: cfg({}) },
@@ -379,119 +379,119 @@ describe('живой цикл против живого рендера', () => {
   });
 });
 
-describe('игра, которая встаёт', () => {
+describe('a game that stalls', () => {
   const spikes = (m) => m.checks.find((c) => c.name === 'stalls');
 
-  test('длинные кадры валят проверку, даже когда работа внутри rAF копеечная', () => {
-    // Repro из ревью: тяжёлый setInterval блокирует поток, работа ВНУТРИ rAF
-    // при этом 0.03 мс — и раньше всё было зелёным при 13 кадрах из 13 длинных.
+  test('long frames fail even when work inside rAF is tiny', () => {
+    // Repro from review: heavy setInterval blocks the thread; work INSIDE rAF
+    // is 0.03 ms, yet all checks passed with 13 long frames out of 13.
     const stall = raw({ work: Array(13).fill(0.03), draws: Array(13).fill(5), frames: 13, longFrames: 13, times: Array(13).fill(300) });
     const m = computeMetrics(stall, { ...opts, seconds: 4, cfg: cfg({}) });
 
-    assert.equal(m.frameWorkMs, 0.03, 'внутри rAF действительно пусто');
+    assert.equal(m.frameWorkMs, 0.03, 'rAF is genuinely idle here');
     assert.equal(m.longFrameRatio, 1);
     assert.equal(spikes(m).status, 'fail');
     assert.equal(m.checks.find((c) => c.name === 'frame-spikes').status, 'pass',
-      'работа внутри кадра тут ни при чём — про неё отдельная проверка');
-    assert.match(spikes(m).detail, /игра встаёт/);
+      'work inside the frame is unrelated; it has a separate check');
+    assert.match(spikes(m).detail, /game stalls/);
     assert.equal(m.verdict, 'fail');
   });
 
-  test('одиночный длинный кадр из сотни — не приговор', () => {
+  test('one long frame out of 100 does not prove failure', () => {
     const m = computeMetrics(raw({ longFrames: 1 }), { ...opts, cfg: cfg({}) });
     assert.equal(spikes(m).status, 'pass');
   });
 
-  test('пятая часть длинных кадров — предупреждение', () => {
+  test('one fifth long frames warns', () => {
     const m = computeMetrics(raw({ longFrames: 15 }), { ...opts, cfg: cfg({}) });
     assert.equal(spikes(m).status, 'warn');
   });
 
-  test('софтверный WebGL понижает провал до предупреждения — это среда, а не игра', () => {
+  test('software WebGL downgrades failure to warning: an environment effect', () => {
     const stall = raw({ work: Array(13).fill(0.03), frames: 13, longFrames: 13, times: Array(13).fill(300) });
     const m = computeMetrics(stall, { ...opts, cfg: { name: 'T', renderer: 'webgl', budgets: {} }, headless: true });
     assert.equal(m.softwareGl, true);
     assert.equal(spikes(m).status, 'warn');
   });
 
-  test('подвисания видны и у игры без единого кадра — они считаются по кадрам пробы', () => {
-    // Иначе единственный детектор работы ВНЕ rAF выключался бы ровно для тех
-    // игр, которые всю работу там и делают.
+  test('stalls are visible even without game frames; they use probe frames', () => {
+    // Otherwise the only detector for work OUTSIDE rAF would be disabled for
+    // the very games doing all their work there.
     const onDemand = { name: 'T', renderer: '2d', renderMode: 'on-demand', budgets: {} };
     const stalling = raw({ work: Array(60).fill(0), frames: 60, gameFrames: 0, paintFrames: 0, longFrames: 40, times: Array(60).fill(300) });
     const m = computeMetrics(stalling, { ...opts, seconds: 3, cfg: onDemand, pixelChange: 0 });
 
-    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'стоимости кадра нет');
-    assert.equal(spikes(m).status, 'fail', 'а подвисания есть, и молчать о них нельзя');
+    assert.equal(m.checks.find((c) => c.name === 'frame-work'), undefined, 'no frame cost exists');
+    assert.equal(spikes(m).status, 'fail', 'but stalls exist and must be reported');
     assert.equal(m.verdict, 'fail');
   });
 
-  test('доля занятости названа честно: это время внутри rAF, а не весь поток', () => {
+  test('busy ratio is named honestly: time inside rAF, not the whole thread', () => {
     const m = computeMetrics(raw(), { ...opts, cfg: cfg({}) });
-    assert.match(m.checks.find((c) => c.name === 'frame-work').detail, /внутри rAF/);
+    assert.match(m.checks.find((c) => c.name === 'frame-work').detail, /inside rAF/);
   });
 });
 
-describe('счётчик draw calls не сработал', () => {
-  test('ноль вызовов при живом рендере — провал, а не «уложились в бюджет»', () => {
-    // 2D-канвас с бюджетом drawCalls: гейт, который невозможно провалить,
-    // бесполезен — и молча делает вид, что GPU-нагрузка измерена.
+describe('draw-call counter did not work', () => {
+  test('zero calls during live rendering fail rather than pass the budget', () => {
+    // 2D-canvas with a drawCalls budget: a gate that cannot fail,
+    // is useless and pretends that GPU load was measured.
     const m = computeMetrics(raw({ draws: Array(100).fill(0), drawsMax: 0, drawsTotal: 0 }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
     const dc = m.checks.find((c) => c.name === 'draw-calls');
     assert.equal(dc.status, 'fail');
-    assert.match(dc.detail, /счётчик draw call не сработал/);
+    assert.match(dc.detail, /draw-call counter captured no work/);
   });
 
-  test('без живого рендера про счётчик не сочиняем — там уже красный sample', () => {
+  test('without live rendering the counter is not judged; sample already fails sample', () => {
     const m = computeMetrics(raw({ work: [], draws: [], drawsMax: 0, frames: 0, gameFrames: 0, times: [] }), {
       ...opts, cfg: cfg({ drawCalls: 150 }),
     });
     assert.equal(m.checks.find((c) => c.name === 'draw-calls'), undefined,
-      'без кадров нет ни нагрузки на GPU, ни повода про неё говорить');
+      'without frames there is neither GPU load evidence nor a reason to claim it');
   });
 });
 
-describe('длительность замера', () => {
-  for (const bad of [0, -1, NaN, Infinity, 'восемь']) {
-    test(`seconds=${String(bad)} отвергается до запуска браузера`, async () => {
+describe('measurement duration', () => {
+  for (const bad of [0, -1, NaN, Infinity, 'eight']) {
+    test(`seconds=${String(bad)} is rejected before browser launch`, async () => {
       await assert.rejects(
-        () => probe({ name: 'T', dir: '/tmp/нет-такой', budgets: {} }, { seconds: bad }),
-        /положительным числом/,
+        () => probe({ name: 'T', dir: '/tmp/nonexistent', budgets: {} }, { seconds: bad }),
+        /positive number/,
       );
     });
   }
 
-  test('нормальное значение до валидации не доходит как ошибка', async () => {
-    // Проверяем, что валидатор не ловит лишнего: дальше падаем уже на конфиге.
+  test('valid duration proceeds past validation', async () => {
+    // Ensure validation does not reject valid values: the config fails later.
     await assert.rejects(
-      () => probe({ name: 'T', dir: '/tmp/нет-такой', budgets: {}, adapterFile: '/tmp/нет-адаптера.mjs' }, { seconds: 3 }),
-      /Адаптер не найден/,
+      () => probe({ name: 'T', dir: '/tmp/nonexistent', budgets: {}, adapterFile: '/tmp/missing-adapter.mjs' }, { seconds: 3 }),
+      /Adapter not found/,
     );
   });
 });
 
-describe('вьюпорт замера', () => {
-  test('явный флаг важнее сценария', () => {
+describe('measurement viewport', () => {
+  test('explicit flag overrides the scenario', () => {
     assert.equal(resolveViewport('desktop', { viewport: 'phone' }, { viewport: 'portrait' }), 'desktop');
   });
 
-  test('сценарий важнее конфига: «phone» — это и есть замеряемая сцена', () => {
+  test('scenario overrides config: phone is the scene being measured', () => {
     assert.equal(resolveViewport(null, { viewport: 'phone' }, { viewport: 'portrait' }), 'phone');
   });
 
-  test('сценарий без вьюпорта не затирает конфиг', () => {
+  test('scenario without viewport preserves config', () => {
     assert.equal(resolveViewport(null, { name: 'peak' }, { viewport: 'portrait' }), 'portrait');
   });
 
-  test('без сценария и без конфига — десктоп', () => {
+  test('no scenario or config defaults to desktop', () => {
     assert.equal(resolveViewport(null, null, {}), 'desktop');
   });
 });
 
-describe('подготовка сцены', () => {
-  /** Страница-заглушка: expect выполняется как обычная функция, без браузера. */
+describe('scene preparation', () => {
+  /** Stub page: expect runs as an ordinary function, without a browser. */
   const stubPage = () => ({
     evaluated: 0,
     async evaluate(fn, arg) { this.evaluated++; return typeof fn === 'function' ? fn(arg) : true; },
@@ -500,41 +500,41 @@ describe('подготовка сцены', () => {
 
   const step = (ok, msg) => ({ expect: { fn: () => ok, msg } });
 
-  test('проверки копятся в одном массиве, а не теряются пошагово', async () => {
-    const checks = await prepareScene(stubPage(), { name: 'peak', steps: [step(true, 'первая'), step(true, 'вторая')] }, {});
-    assert.equal(checks.length, 2, 'раньше каждому шагу доставался свой пустой массив');
+  test('checks accumulate in one array instead of being lost between steps', async () => {
+    const checks = await prepareScene(stubPage(), { name: 'peak', steps: [step(true, 'first'), step(true, 'second')] }, {});
+    assert.equal(checks.length, 2, 'previously each step received its own empty array');
     assert.deepEqual(checks.map((c) => c.status), ['pass', 'pass']);
   });
 
-  test('ложный expect отменяет замер и называет шаг', async () => {
-    const sc = { name: 'storm-peak', steps: [step(true, 'первая'), step(false, 'шторм включён')] };
-    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /storm-peak.*шаг 2.*шторм включён/s);
+  test('false expect aborts measurement and identifies the step', async () => {
+    const sc = { name: 'storm-peak', steps: [step(true, 'first'), step(false, 'storm enabled')] };
+    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /storm-peak.*step 2.*storm enabled/s);
   });
 
-  test('после провала следующие шаги не выполняются', async () => {
+  test('steps after failure are not executed', async () => {
     const page = stubPage();
     const sc = {
       name: 'peak',
-      steps: [step(false, 'сцена собрана'), { expect: { fn: () => { throw new Error('сюда доходить нельзя'); }, msg: 'третий' } }],
+      steps: [step(false, 'scene ready'), { expect: { fn: () => { throw new Error('must not reach here'); }, msg: 'third' } }],
     };
-    await assert.rejects(() => prepareScene(page, sc, {}), /не подготовлена/);
-    assert.equal(page.evaluated, 1, 'остановка на первом же провале');
+    await assert.rejects(() => prepareScene(page, sc, {}), /not prepared/);
+    assert.equal(page.evaluated, 1, 'stops at the first failure');
   });
 
-  test('сценарий без шагов не падает', async () => {
-    const checks = await prepareScene(stubPage(), { name: 'пусто' }, {});
+  test('scenario without steps does not fail', async () => {
+    const checks = await prepareScene(stubPage(), { name: 'empty' }, {});
     assert.deepEqual(checks, []);
   });
 
-  test('expect, вернувший не boolean, — сломанный ассерт, а не пройденный', async () => {
-    // `[...document.querySelectorAll('.enemy')]` — естественная форма проверки
-    // «враги заспавнены», и пустой массив истинен: сцена пуста, ассерт зелёный.
-    const sc = { name: 'peak', steps: [{ expect: { fn: () => [], msg: 'враги заспавнены' } }] };
-    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /вернул \[\] вместо true\/false/);
+  test('expect, returning a non-boolean is a broken assertion, not a pass', async () => {
+    // `[...document.querySelectorAll('.enemy')]` — a natural assertion for
+    // enemies spawned; an empty array is truthy, so an empty scene passed.
+    const sc = { name: 'peak', steps: [{ expect: { fn: () => [], msg: 'enemies spawned' } }] };
+    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /returned \[\] instead of true\/false/);
   });
 
-  test('объект вместо boolean тоже не проходит', async () => {
-    const sc = { name: 'peak', steps: [{ expect: { fn: () => ({ ok: false, why: 'пусто' }), msg: 'сцена собрана' } }] };
-    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /вместо true\/false/);
+  test('an object instead of a boolean also fails', async () => {
+    const sc = { name: 'peak', steps: [{ expect: { fn: () => ({ ok: false, why: 'empty' }), msg: 'scene ready' } }] };
+    await assert.rejects(() => prepareScene(stubPage(), sc, {}), /instead of true\/false/);
   });
 });

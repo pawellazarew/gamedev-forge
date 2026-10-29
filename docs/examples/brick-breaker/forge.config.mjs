@@ -7,9 +7,9 @@ export default {
   scenarios: './forge/scenarios.mjs',
   references: 'forge/references',
   budgets: {
-    frameMs: 16.7,   // бюджет одного кадра при 60 fps
+    frameMs: 16.7,   // one-frame budget at 60 fps
     errors: 0,
-    bundleKb: 1200,   // игра — один файл, раздуваться ей некуда
+    bundleKb: 1200,   // single-file game with little reason to grow
     loadMs: 1500,
   },
 };

@@ -1,11 +1,11 @@
 export default {
-  name: 'Zombie Game (фикстура)',
+  name: 'Zombie Game (fixture)',
   root: '.',
   entry: 'index.html',
   viewport: 'desktop',
   renderer: '2d',
-  // Ни адаптера, ни сценариев: проверяем, что probe отличает живой цикл rAF
-  // от настоящей отрисовки.
+  // No adapter or scenarios: check that probe distinguishes a live rAF loop
+  // from actual rendering.
   budgets: {
     frameMs: 16.7,
     errors: 0,
