@@ -1,24 +1,12 @@
 # blender-kit
 
-Headless-обвязка Blender для игровых ассетов: спрайтшиты, превью моделей,
-интеграция с Claude через BlenderMCP.
+Headless Blender helpers for model previews and 3D-to-2D sprite baking.
+Requires **Blender 5.x** (developed with 5.1.1), including its bundled Python
+and NumPy. No separate Python environment or AI account is needed.
 
-Требует Blender 5.x (`/Applications/Blender.app`, сейчас 5.1.1). Всё, кроме
-интерактивной лепки, работает без GUI — значит повторяемо и годится для
-автономного цикла.
+## Quick start
 
-## Скрипты
-
-| Файл | Что делает |
-|---|---|
-| `blend.sh` | обёртка `blender -b -P` |
-| `bake_sprites.py` | 3D → атлас спрайтов (направления × кадры) + JSON под Phaser |
-| `render_preview.py` | 4 ракурса в один PNG, чтобы агент посмотрел на модель |
-| `demo_robot.py` | тестовая модель с анимацией шага |
-| `forge_bpy.py` | общее: камера, свет, рендер, работа с пикселями, атлас |
-| `install_mcp_addon.sh` | ставит аддон BlenderMCP для интерактивного режима |
-
-## Примеры
+Run from this directory:
 
 ```bash
 ./blend.sh demo_robot.py -- --out /tmp/robot.blend
@@ -27,27 +15,82 @@ Headless-обвязка Blender для игровых ассетов: спрай
   --out /tmp/robot-sprites --anim walk --dirs 8 --frames 1-24 --step 3 --size 96
 ```
 
-## Два режима работы с Blender
+The wrapper uses `BLENDER_APP` if set, then `blender` on `PATH`, then the standard
+macOS application path. For a custom installation:
 
-**Headless (по умолчанию).** Скрипт на bpy собирает сцену и рендерит.
-Детерминирован, повторяем, годится для цикла «поменял параметр → пересобрал».
+```bash
+BLENDER_APP=/opt/blender/blender ./blend.sh demo_robot.py -- --out /tmp/robot.blend
+```
 
-**Интерактивный (BlenderMCP).** Claude пишет код в живой Blender через сокет
-`localhost:9876` и сразу видит результат — так удобно лепить форму.
-Установка: `./install_mcp_addon.sh`, затем в Blender N-панель → BlenderMCP →
-Connect, и `claude mcp add blender -- uvx blender-mcp`.
+macOS is used for development. The wrapper supports Linux installations;
+headless rendering still requires graphics drivers appropriate for Blender.
+Windows users can invoke Blender directly with `-b -P script.py -- ...`.
 
-Практика из [TheLongSilence](https://github.com/achimala/TheLongSilence):
-лепим интерактивно, найденный приём переносим в скрипт, скрипт становится
-частью сборки. Метод моделирования — скилл `blender-hardsurface`.
+## Tools
 
-## Грабли
+| Script | Output / purpose |
+| --- | --- |
+| `blend.sh` | Run a Python script in background Blender, optionally loading a `.blend` |
+| `demo_robot.py` | Animated example model saved as `.blend` |
+| `render_preview.py` | Four views arranged in one PNG |
+| `bake_sprites.py` | Transparent PNG atlas + Phaser-compatible JSON |
+| `forge_bpy.py` | Shared camera, lighting, rendering, image and atlas helpers |
+| `export_glb.py` | Opinionated GLB exporter for Ocean Echo hero assets |
+| `install_mcp_addon.sh` | Optional BlenderMCP add-on installer for macOS |
 
-- `primitive_cube_add(size=1)` даёт куб со стороной 1 — `scale` равен нужному
-  размеру, а не половине.
-- Blender хранит пиксели снизу вверх: при чтении/записи нужен `[::-1]`.
-- Даунсемпл без премультипликации альфы даёт ореол по контуру спрайта.
-- Имя движка EEVEE менялось между версиями — `forge_bpy.setup_render()`
-  выбирает существующий из `BLENDER_EEVEE_NEXT` / `BLENDER_EEVEE` / `CYCLES`.
-- Подозрительно быстрый рендер в 5.x = композитор без `CompositorNodeRLayers`
-  (подробности в скилле `blender-hardsurface`).
+## Sprite options
+
+```bash
+./blend.sh bake_sprites.py -- --import /path/to/model.glb \
+  --out /tmp/model --dirs 8 --frames 1-24 --step 2 --size 96 \
+  --elevation 30 --anim walk
+```
+
+- `--dirs`: views around the model (default 8).
+- `--frames`: one frame or an inclusive range (default `1`).
+- `--step`: frame interval (default 1).
+- `--size`: final square frame size (default 128).
+- `--ss`: supersampling factor before downsampling (default 4).
+- `--anim`: frame-name label in the atlas, not an action selector.
+- `--object`: optional object filter.
+- `--keep-frames`: retain individual PNGs in `<out>_frames/`.
+
+Outputs are `<out>.png` and `<out>.json`. The input scene's animation is
+sampled at the requested frames. Lighting and camera helpers fit the model;
+inspect the results at the intended in-game size.
+
+For previews, `--size` sets each tile size (default 512), and
+`--background transparent` preserves transparency instead of the dark backdrop.
+
+## GLB export
+
+`export_glb.py` enforces project-specific conventions: selected mesh names use
+`hero_` by default, vertex colors use `Col`, and geometry is checked against a
+triangle budget. It applies transforms/modifiers and changes the scene for
+export. Run it on a saved copy; it is not a generic scene-preserving exporter.
+
+```bash
+./blend.sh export_glb.py --blend /path/to/hero.blend -- \
+  --out /tmp/hero.glb --budget 3000 --select hero_
+```
+
+## Optional interactive BlenderMCP
+
+The headless tools do not need MCP. On macOS, `./install_mcp_addon.sh` downloads
+a pinned BlenderMCP revision, verifies SHA-256 and asks before installing and
+enabling it in Blender's user preferences. It requires `curl` and `shasum`.
+The GUI connection and MCP client must be configured separately; follow the
+installer's output. Only enable this local code-execution service for clients
+you trust.
+
+## Limitations
+
+Render appearance depends on Blender version, renderer and graphics hardware;
+headless execution does not guarantee bit-identical images across machines.
+Alpha-aware downsampling avoids dark sprite fringes. Blender image pixels use
+bottom-up coordinates; use the shared image helpers when adding tools.
+
+Blender rendering is not exercised by the GitHub CI workflow. Include your
+Blender version and a small reproduction when reporting rendering problems.
+
+[MIT license](../LICENSE) · [Contributing](../CONTRIBUTING.md)

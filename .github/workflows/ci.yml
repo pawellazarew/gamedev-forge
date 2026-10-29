@@ -17,11 +17,11 @@ jobs:
 
       - name: Установить зависимости
         working-directory: game-forge
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Скачать Chromium
         working-directory: game-forge
-        run: npx playwright install --with-deps chromium
+        run: npx playwright-core install --with-deps chromium
 
       - name: Синтаксис всех модулей
         run: for f in game-forge/src/*.mjs game-forge/bin/*.mjs fixtures/*/forge.config.mjs fixtures/*/forge/*.mjs; do node --check "$f"; done
