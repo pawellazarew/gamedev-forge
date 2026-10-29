@@ -1,12 +1,12 @@
 export default {
   name: 'REBOOT: Last Engineer',
 
-  // гоняем собранный билд: он ближе к тому, что увидит игрок, чем dev-сервер
+  // Test the built game: closer to the player experience than a dev server.
   root: 'dist',
   entry: 'index.html',
 
-  viewport: 'wide',    // игра 960×540, Scale.FIT
-  renderer: 'webgl',   // Phaser AUTO выбирает WebGL — иначе кадр будет чёрным
+  viewport: 'wide',    // 960×540 game, Scale.FIT
+  renderer: 'webgl',   // Phaser AUTO selects WebGL; otherwise screenshots are black
 
   adapter: './forge/adapter.mjs',
   scenarios: './forge/scenarios.mjs',
@@ -15,7 +15,7 @@ export default {
   budgets: {
     frameMs: 16.7,
     errors: 0,
-    bundleKb: 2500,   // Phaser сам весит ~1.6 МБ; следим, чтобы не разрасталось
+    bundleKb: 2500,   // Phaser itself is ~1.6 MB; keep bundle growth in check
     loadMs: 3000,
   },
 };

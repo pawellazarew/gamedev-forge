@@ -1,9 +1,9 @@
 """
-Общая обвязка для headless-скриптов Blender: разбор аргументов после `--`,
-сцена, ортокамера вокруг объекта, свет, рендер и склейка атласа.
+Shared helpers for headless Blender scripts: arguments after `--`,
+scene setup, orbiting orthographic camera, lighting, rendering and atlas packing.
 
-Ничего кроме bpy/numpy/mathutils — они есть внутри Blender, а внешние
-пакеты в его Python ставить не хочется.
+Uses only bpy/numpy/mathutils bundled with Blender; no external Python
+packages need to be installed in its Python environment.
 """
 import sys
 import os
@@ -16,12 +16,12 @@ from mathutils import Vector
 
 
 def argv():
-    """Аргументы после `--`: всё до него съедает сам Blender."""
+    """Arguments after `--`; Blender consumes everything before it."""
     return sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
 
 
 def parse(args, defaults):
-    """Простейший разбор `--key value` / `--flag` поверх словаря умолчаний."""
+    """Parse `--key value` / `--flag` arguments over a defaults dictionary."""
     out = dict(defaults)
     i = 0
     while i < len(args):
@@ -41,10 +41,10 @@ def parse(args, defaults):
     return out
 
 
-# --- сцена ---
+# --- scene ---
 
 def import_asset(path):
-    """Подтягивает .glb/.gltf/.fbx/.obj в текущую сцену."""
+    """Import .glb/.gltf/.fbx/.obj into the current scene."""
     ext = os.path.splitext(path)[1].lower()
     if ext in ('.glb', '.gltf'):
         bpy.ops.import_scene.gltf(filepath=path)
@@ -55,25 +55,25 @@ def import_asset(path):
     elif ext == '.blend':
         bpy.ops.wm.open_mainfile(filepath=path)
     else:
-        raise SystemExit(f'Не знаю, как импортировать {ext}')
+        raise SystemExit(f'Unsupported import format: {ext}')
 
 
 def target_objects(name=None):
-    """Что рендерим: объект/коллекцию по имени или все меши сцены."""
+    """Render a named object/collection or all meshes in the scene."""
     if name:
         if name in bpy.data.collections:
             return [o for o in bpy.data.collections[name].all_objects if o.type == 'MESH']
         if name in bpy.data.objects:
             obj = bpy.data.objects[name]
             return [obj] + [c for c in obj.children_recursive if c.type == 'MESH']
-        raise SystemExit(f'Нет объекта или коллекции "{name}"')
+        raise SystemExit(f'Object or collection not found: "{name}"')
     return [o for o in bpy.context.scene.objects if o.type == 'MESH']
 
 
 def bounds(objects):
-    """Центр и радиус описывающей сферы в мировых координатах."""
+    """Center and radius of the bounding sphere in world coordinates."""
     if not objects:
-        raise SystemExit('В сцене нет мешей — нечего рендерить')
+        raise SystemExit('The scene has no meshes to render')
     pts = []
     for o in objects:
         for corner in o.bound_box:
@@ -87,10 +87,10 @@ def bounds(objects):
 
 
 def setup_camera(center, radius, azimuth_deg, elevation_deg, margin=1.08):
-    """Ортокамера, смотрящая в центр объекта с заданного азимута и высоты.
+    """Orthographic camera looking at the object center from an azimuth and elevation.
 
-    Ортографическая проекция обязательна: перспектива ломает совпадение
-    спрайтов между направлениями — объект «дышит» при повороте.
+    Orthographic projection keeps sprite sizes consistent across directions;
+    perspective makes the object appear to expand and shrink as it turns.
     """
     cam_data = bpy.data.cameras.get('forge_cam') or bpy.data.cameras.new('forge_cam')
     cam_data.type = 'ORTHO'
@@ -115,9 +115,9 @@ def setup_camera(center, radius, azimuth_deg, elevation_deg, margin=1.08):
 
 
 def ensure_lights(center, radius, strength=1.0):
-    """Трёхточечная схема, если художник не поставил свет сам.
+    """Three-point lighting when the artist has not provided lights.
 
-    Спрайт без света — чёрный силуэт, и критик будет обсуждать не тот дефект.
+    An unlit sprite is a black silhouette, leading reviewers to diagnose the wrong defect.
     """
     if any(o.type == 'LIGHT' for o in bpy.context.scene.objects):
         return False
@@ -140,7 +140,7 @@ def ensure_lights(center, radius, strength=1.0):
 
 def setup_render(size, samples=32, transparent=True, engine=None):
     scene = bpy.context.scene
-    # Имя движка менялось между версиями — берём то, что реально есть.
+    # Engine names changed between versions; choose one that exists.
     available = [i.identifier for i in scene.bl_rna.properties['render'].fixed_type.bl_rna
                  .properties['engine'].enum_items]
     if engine and engine in available:
@@ -175,16 +175,16 @@ def render_to(path):
     return path
 
 
-# --- работа с пикселями ---
+# --- pixel operations ---
 
 def load_rgba(path):
-    """PNG → массив (h, w, 4) float 0..1, строки сверху вниз."""
+    """PNG to an (h, w, 4) float array in 0..1, rows from top to bottom."""
     img = bpy.data.images.load(path, check_existing=False)
     w, h = img.size
     buf = np.empty(w * h * 4, dtype=np.float32)
     img.pixels.foreach_get(buf)
     bpy.data.images.remove(img)
-    return buf.reshape(h, w, 4)[::-1]  # Blender хранит снизу вверх
+    return buf.reshape(h, w, 4)[::-1]  # Blender stores rows from bottom to top
 
 
 def save_rgba(arr, path):
@@ -199,10 +199,10 @@ def save_rgba(arr, path):
 
 
 def downsample(arr, factor):
-    """Box-фильтр с премультиплицированием альфы.
+    """Box filter with premultiplied alpha.
 
-    Без премультипликации края спрайта светятся «ореолом»: цвет прозрачных
-    пикселей затекает в видимые.
+    Without premultiplication, transparent pixel colors bleed into visible
+    pixels and create halos around sprite edges.
     """
     if factor <= 1:
         return arr
@@ -219,16 +219,16 @@ def downsample(arr, factor):
 
 
 def quantize(arr, levels):
-    """Ступенчатое квантование цвета — грубая, но рабочая пиксель-артизация."""
+    """Stepped color quantization: a rough but usable pixel-art effect."""
     if not levels or levels <= 1:
         return arr
     rgb = np.round(arr[..., :3] * (levels - 1)) / (levels - 1)
-    alpha = (arr[..., 3:4] > 0.5).astype(np.float32)  # жёсткая альфа, без полутонов
+    alpha = (arr[..., 3:4] > 0.5).astype(np.float32)  # binary alpha, no partial transparency
     return np.concatenate([rgb, alpha], axis=-1)
 
 
 def pack_atlas(frames, cols=None):
-    """Сетка кадров одинакового размера → (атлас, координаты кадров)."""
+    """Equal-sized frame grid to (atlas, frame coordinates)."""
     n = len(frames)
     fh, fw, _ = frames[0][1].shape
     cols = cols or math.ceil(math.sqrt(n))
@@ -243,7 +243,7 @@ def pack_atlas(frames, cols=None):
 
 
 def write_phaser_atlas(json_path, image_name, coords, size, extra=None):
-    """Формат Phaser 3 `this.load.atlas()` (JSON Hash)."""
+    """Phaser 3 `this.load.atlas()` format (JSON Hash)."""
     data = {
         'frames': {
             name: {

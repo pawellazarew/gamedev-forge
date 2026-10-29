@@ -1,66 +1,47 @@
 import { viewport as viewportPreset } from './browser.mjs';
 
-/**
- * «Попадёт ли по элементу настоящий игрок». DOM-клик — `el.click()`,
- * `__b2b.clickCode()`, `dispatchEvent` — доходит до обработчика сквозь любой
- * слой сверху, и сценарий зеленеет на игре, в которой нельзя нажать ни одной
- * кнопки. Так было с bum2billionaire 2026-09-23: `#art { z-index: 3 }` накрыл
- * кнопку кода и магазин, а play отчитался 15/15, хотя на собственных кадрах
- * forge висела пустая панель магазина.
- *
- * Проверка повторяет то, что делает браузер при настоящем клике: берёт центр
- * видимой части элемента и спрашивает `elementFromPoint`, кто там сверху.
- */
+/** Test whether a real player can reach a control. DOM calls such as el.click(),
+ * __b2b.clickCode() and dispatchEvent bypass overlays. In bum2billionaire on
+ * 2026-09-23, #art { z-index: 3 } covered the code button and shop, yet play
+ * passed 15/15 while screenshots showed an empty shop panel.
+ * Match real browser hit testing: use the visible center of the element
+ * and ask elementFromPoint which node is on top. */
 
-/** Ошибка «по элементу не попасть» — сценарий по ней снимает кадр с перекрытием. */
+/** Unreachable-element error; scenario code captures the covering layer. */
 export class HitError extends Error {}
 
-/**
- * Сколько проверка в конце сценария ждёт, пока элементы освободятся:
- * переходы и затухания оверлеев короче. Меняется `hittable.settleMs`.
- */
+/** End-of-scenario wait for overlays/transitions to clear; set hittable.settleMs. */
 export const HIT_SETTLE_MS = 1000;
-/**
- * Сколько клик ждёт, пока элемент появится, освободится и включится.
- * 30 с Playwright — это полминуты на каждую опечатку. Меняется `timeout` шага.
- */
+/** Wait for an element to appear, become uncovered and enabled.
+ * Use the step timeout instead of Playwright's 30-second wait per typo. */
 export const WAIT_VISIBLE_MS = 5000;
-/** Вьюпорты, на которых раскладка ломается по-разному; по умолчанию проверяем все три. */
+/** Layout failures differ across these viewports; check all three by default. */
 export const DEFAULT_HIT_VIEWPORTS = ['desktop', 'phoneLandscape', 'phone'];
 
-/**
- * Выполняется в странице, поэтому самодостаточна: никаких замыканий на модуль.
- * Элементы приходят из движка селекторов Playwright, а не из второго
- * `querySelector`: тот не пробивал бы shadow DOM и мог найти не тот элемент.
- *
- * Берётся первый ВИДИМЫЙ элемент по селектору: карточки неактивной вкладки и
- * спрятанные шаблоны идут в DOM раньше и валили бы проверку ложно.
- *
- * Три системы координат, которые легко спутать:
- *   - клиентские (getBoundingClientRect, elementFromPoint) — от лэйаут-вьюпорта;
- *   - экран игрока — visual viewport: на телефоне страница шире экрана, и
- *     видна только его часть со сдвигом offsetLeft/offsetTop;
- *   - координаты ввода Playwright — от левого верхнего угла visual viewport.
- * Считать «видимое» по innerWidth нельзя: на широкой странице кнопка за
- * краем экрана проходила проверку, а касание уходило мимо неё без ошибки.
- */
+/** Runs inside the page and must have no module closures. Elements come from
+ * Playwright's selector engine, which pierces shadow DOM, unlike another
+ * document.querySelector lookup. Use the first visible match so hidden
+ * templates and inactive tabs cannot cause false failures.
+ * Coordinate spaces differ: getBoundingClientRect and elementFromPoint use
+ * the layout viewport; the player sees the visual viewport with its offsets;
+ * Playwright input is relative to the visual viewport origin. innerWidth
+ * can include offscreen content on mobile and falsely accept an unreachable tap. */
 function probeHit(els, opts) {
   const describe = (n) => {
     if (!n) return null;
     if (n.nodeType !== 1) return String(n.nodeName).toLowerCase();
     let s = n.tagName.toLowerCase();
     if (n.id) s += `#${n.id}`;
-    // У SVG className — объект, а не строка
+    // SVG className is an object rather than a string.
     const cls = typeof n.className === 'string' ? n.className.trim().split(/\s+/).filter(Boolean) : [];
     if (cls.length) s += `.${cls.slice(0, 3).join('.')}`;
     return s;
   };
-  // Родитель в плоском дереве: сквозь слот и границу shadow root. По
-  // parentElement обход обрывался на shadow root, и список с прокруткой
-  // вокруг веб-компонента не считался контейнером.
+  // Walk the flattened parent tree through slots and shadow roots.
+  // parentElement alone misses scroll containers around web components.
   const up = (n) => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
-  // Слой, в котором лежит узел: ближайший предок с позиционированием и
-  // явным z-index. Именно он решает, кто сверху, и именно его чинят.
+  // The relevant layer is the nearest positioned ancestor with explicit
+  // z-index: it controls stacking and is the layer the developer should fix.
   const layerOf = (n) => {
     for (let cur = n; cur && cur.nodeType === 1; cur = up(cur)) {
       const cs = getComputedStyle(cur);
@@ -88,7 +69,7 @@ function probeHit(els, opts) {
   const view = () => (vv
     ? { x: vv.offsetLeft, y: vv.offsetTop, w: vv.width, h: vv.height }
     : { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight });
-  // Прокрутку всего окна задаёт overflow у html, а если там visible — у body
+  // Viewport overflow comes from html, or body when html overflow is visible.
   const docOverflow = () => {
     const html = getComputedStyle(document.documentElement);
     if (html.overflowX !== 'visible' || html.overflowY !== 'visible' || !document.body) {
@@ -96,24 +77,23 @@ function probeHit(els, opts) {
     }
     return { cs: getComputedStyle(document.body), el: document.body };
   };
-  // При `html, body { overflow: hidden }` scrollingElement — html, а крутится
-  // body; запоминать надо оба, иначе прокрутка body не вернётся.
+  // With html/body overflow:hidden, scrollingElement is html but body can
+  // scroll. Snapshot both so body scroll can be restored.
   const atTop = (a) => !a || a === document.documentElement;
-  // overflow у body уходит на весь экран, только пока у html он visible. При
-  // `html, body { overflow: hidden }` — обычном CSS полноэкранной игры —
-  // body становится своим контейнером прокрутки, и пропускать его значило
-  // зеленеть на кнопке, до которой игрок не докрутит.
+  // Body overflow propagates to the viewport only while html overflow is
+  // visible. With fullscreen html/body overflow:hidden, body is its own
+  // scroll container and must not be skipped when testing reachability.
   const htmlVisible = () => {
     const cs = getComputedStyle(document.documentElement);
     return cs.overflowX === 'visible' && cs.overflowY === 'visible';
   };
-  // Создаёт ли узел containing block для fixed-потомков (и для absolute тоже)
+  // Whether the node establishes a containing block for fixed and absolute descendants.
   const makesCB = (cs) => cs.transform !== 'none' || cs.perspective !== 'none' || cs.filter !== 'none'
     || (cs.backdropFilter && cs.backdropFilter !== 'none')
     || /paint|layout|strict|content/.test(cs.contain || '') || /transform|perspective|filter/.test(cs.willChange || '');
-  // Обрезать узел может только его containing block и цепочка выше: fixed-
-  // кнопку не режет overflow центрированного #game, absolute-кнопку —
-  // непозиционированная обёртка. Без этого обе объявлялись «за экраном».
+  // Only the containing block and its ancestors clip an element. A fixed
+  // button is not clipped by centered #game overflow; an absolute button is
+  // not clipped by a non-positioned wrapper. Otherwise both look offscreen.
   const containingBlock = (n) => {
     const pos = getComputedStyle(n).position;
     let a = up(n);
@@ -131,16 +111,16 @@ function probeHit(els, opts) {
   const clippers = () => {
     const out = [];
     for (let a = containingBlock(el); a; a = containingBlock(a)) {
-      // overflow body, ушедший на экран, учитывает docOverflow
+      // docOverflow handles body overflow propagated to the viewport.
       if (a === document.body && htmlVisible()) continue;
       const cs = getComputedStyle(a);
       if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') out.push({ a, cs });
     }
     return out;
   };
-  // Видимая часть: сам элемент ∩ обрезающие контейнеры ∩ экран игрока. Центр
-  // берётся по ней: у панели выше экрана или строки в прокручиваемом списке
-  // геометрический центр может лежать там, куда игрок не видит.
+  // Visible area = element intersected with clipping containers and the player
+  // viewport. Use its center; the geometric center of an oversized panel or
+  // partly visible list row may lie outside the player's view.
   const visible = () => {
     const r = el.getBoundingClientRect();
     let left = r.left, top = r.top, right = r.right, bottom = r.bottom;
@@ -154,8 +134,8 @@ function probeHit(els, opts) {
     right = Math.min(right, v.x + v.w); bottom = Math.min(bottom, v.y + v.h);
     return { r, v, box: right > left && bottom > top ? { left, top, right, bottom } : null };
   };
-  // Прокрутка всех контейнеров и страницы с пометкой, какие оси заперты
-  // (overflow: hidden/clip): программно их крутить можно, игроку — нет.
+  // Snapshot container/page scrolling and mark axes locked by hidden/clip.
+  // Scripts can scroll these axes but a player cannot.
   const scrollState = () => {
     const list = clippers().map(({ a, cs }) => ({ a, x: HIDE.test(cs.overflowX), y: HIDE.test(cs.overflowY) }));
     const se = document.scrollingElement;
@@ -163,8 +143,8 @@ function probeHit(els, opts) {
       const d = docOverflow();
       list.push({ a: se, x: HIDE.test(d.cs.overflowX), y: HIDE.test(d.cs.overflowY), owner: d.el });
     }
-    // body — свой контейнер прокрутки (см. htmlVisible): его прокрутку тоже
-    // запоминаем, даже если он попал сюда не как обрезающий предок
+    // Body can be its own scroll container (see htmlVisible); record it
+    // even when it was not encountered as a clipping ancestor.
     const body = document.body;
     if (body && body !== se && !htmlVisible() && !list.some((st) => st.a === body)) {
       const cs = getComputedStyle(body);
@@ -178,14 +158,13 @@ function probeHit(els, opts) {
   const w = Math.round(r.width), h = Math.round(r.height);
   let saved = null, locked = null;
   if (!box && opts.scroll) {
-    // Докручиваем, как докрутил бы игрок. inline: nearest — не трогать
-    // горизонталь, если по ней элемент и так виден: у списка с
-    // overflow-x: hidden лишний сдвиг читался как «заперто» навсегда.
-    // instant: при `scroll-behavior: smooth` прокрутка иначе асинхронна.
+    // Scroll like a player. inline:nearest leaves an already-visible horizontal
+    // position intact, avoiding false locked-axis failures in overflow-x:hidden
+    // lists. instant avoids asynchronous scroll-behavior:smooth movement.
     saved = scrollState();
     el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-    // Откатываем только запертые оси — по свободной игрок докрутил бы сам —
-    // и судим по тому, что осталось видно.
+    // Restore only locked axes. A player could move the unlocked axes; assess
+    // what remains visible afterward.
     for (const st of saved) {
       if (st.x && st.a.scrollLeft !== st.left) { st.a.scrollLeft = st.left; locked = locked || st; }
       if (st.y && st.a.scrollTop !== st.top) { st.a.scrollTop = st.top; locked = locked || st; }
@@ -201,14 +180,14 @@ function probeHit(els, opts) {
       };
     }
     const x = (box.left + box.right) / 2, y = (box.top + box.bottom) / 2;
-    // Ввод — от угла экрана игрока, а не от лэйаут-вьюпорта
+    // Input coordinates use the player viewport origin, not the layout viewport.
     const at = { x, y, ix: x - v.x, iy: y - v.y, w, h };
     if (getComputedStyle(el).pointerEvents === 'none') return { ok: false, reason: 'no-pointer-events', ...at };
 
     const root = el.getRootNode();
     const hit = (typeof root.elementFromPoint === 'function' ? root : document).elementFromPoint(x, y);
-    // Выключенная кнопка лежит сверху и hit-test проходит, но клик по ней
-    // ничего не делает: для перекрытия это не провал, для клика — провал.
+    // A disabled button can be on top and pass hit testing but cannot be
+    // activated: disabled is acceptable for an overlay check, not for a click.
     const disabled = el.matches(':disabled');
     if (hit && (hit === el || el.contains(hit))) return { ok: true, disabled, ...at };
     const owner = hit && !hit.id && hit.parentElement ? hit.parentElement.closest('[id]') : null;
@@ -221,18 +200,15 @@ function probeHit(els, opts) {
     };
   };
   const res = judge();
-  // Проверка не должна двигать игру: возвращаем прокрутку как была. Для
-  // клика не возвращаем — жать надо туда, куда докрутили. Сдвиг visual
-  // viewport на телефоне вернуть нечем — API для него нет.
+  // Pure checks restore scrolling; clicks retain it to hit the scrolled-to
+  // position. Mobile visual-viewport panning has no restoration API.
   if (opts.restore && saved) {
     const changed = saved.some((st) => st.a.scrollLeft !== st.left || st.a.scrollTop !== st.top);
     for (const st of saved) { st.a.scrollLeft = st.left; st.a.scrollTop = st.top; }
-    // Прокрутка туда и обратно всё равно шлёт scroll/scrollend на следующем
-    // кадре, и игра, закрывающая попап по прокрутке, менялась бы от чистой
-    // проверки. Глушим на перехвате у window только события тех контейнеров,
-    // что мы вернули, и только если к моменту доставки они стоят там же:
-    // настоящая прокрутка следующего шага сливается в то же событие, но
-    // сдвигает контейнер — и проходит к игре.
+    // Scrolling out and back still emits scroll/scrollend next frame. Suppress
+    // only restored-container events that arrive while the container remains
+    // at its restored position. A genuine next-step scroll may share the event
+    // but moves the container and must reach the game.
     if (changed) {
       const stop = (e) => {
         const t = e.target === document ? document.scrollingElement : e.target;
@@ -246,29 +222,23 @@ function probeHit(els, opts) {
   return res;
 }
 
-/**
- * Одна проверка без ожидания: `{ ok, reason, x, y, ix, iy, … }`.
- * scroll — докрутить к элементу, если игрок может это сделать сам;
- * restore — вернуть прокрутку после проверки.
- */
+/** One immediate check: { ok, reason, x, y, ix, iy, ... }.
+ * scroll allows player-reachable scrolling; restore returns to the prior position. */
 export async function hitTest(page, selector, { scroll = true, restore = false } = {}) {
   try {
     return await page.locator(selector).evaluateAll(probeHit, { scroll, restore });
   } catch (err) {
     const msg = String(err?.message || err).split('\n')[0];
-    // Опечатка в селекторе — не то же самое, что «элемента нет»
+    // An invalid selector is different from an absent element.
     if (/while parsing|SyntaxError|not a valid|Unknown engine/i.test(msg)) return { ok: false, reason: 'bad-selector', error: msg };
-    // Элемент пересоздали посреди проверки — это «не нашли», а не падение прогона
+    // An element recreated during the check is missing, not a crashed run.
     return { ok: false, reason: 'detached', error: msg };
   }
 }
 
-/**
- * Проверять, пока все элементы не пройдут `accept` или не выйдет срок.
- * Разовый снимок ловил бы середину затухания модалки; постоянное перекрытие
- * от ожидания не лечится и падает так же, только позже. Неверный селектор
- * ожиданием не лечится вовсе — на нём выходим сразу.
- */
+/** Retry until every element passes accept or the deadline expires. A single
+ * snapshot may catch a fading modal; persistent overlays still fail after
+ * the wait. Invalid selectors cannot recover and fail immediately. */
 export async function waitHittable(page, selectors, { settleMs = HIT_SETTLE_MS, accept = (r) => r.ok, restore = false } = {}) {
   const deadline = Date.now() + settleMs;
   for (;;) {
@@ -281,60 +251,58 @@ export async function waitHittable(page, selectors, { settleMs = HIT_SETTLE_MS, 
 
 const px = (v) => Math.round(v);
 
-/** Человеческое объяснение провала: что именно мешает и что чинить. */
+/** Human-readable failure explanation identifying the obstruction and repair target. */
 export function hitMessage(selector, res) {
   const s = `«${selector}»`;
   switch (res.reason) {
-    case 'missing': return `${s} не найден на странице`;
-    case 'bad-selector': return `${s} — неверный селектор: ${res.error}`;
-    case 'detached': return `${s} пропал из документа во время проверки`;
+    case 'missing': return `${s} not found on the page`;
+    case 'bad-selector': return `${s} — invalid selector: ${res.error}`;
+    case 'detached': return `${s} was detached during the check`;
     case 'invisible':
-      return `${s} не виден: ${res.w}×${res.h}${res.visibility === 'hidden' ? ', visibility: hidden' : ''}`
-        + (res.count > 1 ? ` (спрятаны все ${res.count} совпадения)` : '');
+      return `${s} not visible: ${res.w}×${res.h}${res.visibility === 'hidden' ? ', visibility: hidden' : ''}`
+        + (res.count > 1 ? ` (all ${res.count} matches are hidden)` : '');
     case 'offscreen':
-      return `${s} за экраном игрока: левый верхний угол (${res.rect[0]}, ${res.rect[1]}), `
-        + `размер ${res.w}×${res.h} при экране ${res.vw}×${res.vh}`
-        + (res.locked ? `, и докрутить туда нельзя — overflow: hidden у ${res.locked}` : '');
+      return `${s} outside the player viewport: top-left (${res.rect[0]}, ${res.rect[1]}), `
+        + `size ${res.w}×${res.h}, viewport ${res.vw}×${res.vh}`
+        + (res.locked ? `, cannot scroll there; overflow: hidden on ${res.locked}` : '');
     case 'no-pointer-events':
-      return `${s} не принимает клики: у самого элемента pointer-events: none`;
+      return `${s} cannot receive clicks: the element has pointer-events: none`;
     case 'disabled':
-      return `${s} выключен (disabled) — настоящий клик ничего бы не сделал`;
+      return `${s} is disabled; a real click would have no effect`;
     case 'covered': {
       const top = res.hit
-        ? res.owner ? `${res.hit} внутри ${res.owner}` : res.hit
-        : 'пустота (точка вне документа)';
-      const layer = res.layer ? ` (слой ${res.layer.el}, z-index ${res.layer.z})` : '';
-      const self = res.self ? `z-index ${res.self.z} у ${res.self.el}` : 'своего z-index нет';
-      return `${s} перекрыт: в точке (${px(res.x)}, ${px(res.y)}) сверху ${top}${layer}, у ${s} ${self} — `
-        + 'настоящий клик игрока уйдёт в перекрывающий элемент';
+        ? res.owner ? `${res.hit} inside ${res.owner}` : res.hit
+        : 'nothing (point outside the document)';
+      const layer = res.layer ? ` (layer ${res.layer.el}, z-index ${res.layer.z})` : '';
+      const self = res.self ? `z-index ${res.self.z} on ${res.self.el}` : 'no explicit z-index';
+      return `${s} is covered: at (${px(res.x)}, ${px(res.y)}), ${top}${layer} is on top; ${s} has ${self}; `
+        + 'a real player click would hit the covering element';
     }
-    default: return `${s} недоступен для клика (${res.reason})`;
+    default: return `${s} cannot be clicked (${res.reason})`;
   }
 }
 
-/** Бросает с понятным сообщением, если по элементу не попасть. */
+/** Throw a clear diagnostic when an element is unreachable. */
 export async function assertHittable(page, selector, { settleMs = HIT_SETTLE_MS } = {}) {
   const [res] = await waitHittable(page, [selector], { settleMs, restore: true });
   if (!res.ok) throw new HitError(hitMessage(selector, res));
   return res;
 }
 
-/**
- * Проверки в формате сценария: по одной на селектор, провал не бросает.
- * kind: 'hittable' отличает их от expect — в probe перекрытие — находка, а
- * не сорванная подготовка сцены.
- */
+/** One scenario-format check per selector; failures do not throw.
+ * kind:hittable distinguishes findings from expect failures so probe can
+ * report an overlay without cancelling scene preparation. */
 export async function hittableChecks(page, selectors, settleMs = HIT_SETTLE_MS, { keepOnFail = false } = {}) {
-  // restore: проверка в конце сценария или посреди него не двигает игру —
-  // иначе probe мерил бы уже прокрученную сцену
+  // Restore scrolling for checks both mid-scenario and at its end; otherwise
+  // probe would measure a scrolled scene.
   const results = await waitHittable(page, selectors, { settleMs, restore: true });
-  // keepOnFail: на провале докрутить обратно к первому проваленному
-  // элементу, чтобы кадр провала показывал перекрытие и совпадал с
-  // координатами в сообщении. Сценарий к этому моменту уже красный.
+  // keepOnFail scrolls back to the first failed element so the failure frame
+  // shows the obstruction at the reported coordinates. The scenario is
+  // already failed at this point.
   const firstFail = results.find((r) => !r.ok);
   if (keepOnFail && firstFail) await hitTest(page, firstFail.selector, { restore: false });
   return results.map((r) => ({
-    name: `кликабелен «${r.selector}»`,
+    name: `hittable «${r.selector}»`,
     status: r.ok ? 'pass' : 'fail',
     detail: r.ok ? '' : hitMessage(r.selector, r),
     kind: 'hittable',
@@ -342,24 +310,20 @@ export async function hittableChecks(page, selectors, settleMs = HIT_SETTLE_MS, 
   }));
 }
 
-/** Одна проверка для probe: там у проверок короткие имена и одна строка на гейт. */
+/** One compact probe gate with a short name and a single diagnostic line. */
 export function hittableSummary(checks) {
   const failed = checks.filter((c) => c.status === 'fail');
   const sels = [...new Set(checks.map((c) => c.selector).filter(Boolean))];
   return {
     name: 'hittable',
     status: failed.length ? 'fail' : 'pass',
-    detail: failed.length ? failed.map((c) => c.detail).join(' | ') : `кликабельны: ${sels.join(', ')}`,
+    detail: failed.length ? failed.map((c) => c.detail).join(' | ') : `hittable: ${sels.join(', ')}`,
   };
 }
 
-/**
- * Клик как у игрока: дождаться, пока элемент появится, окажется сверху и
- * включится (докрутив к нему, если игрок может), и нажать настоящим вводом —
- * мышью на десктопе, пальцем там, где у вьюпорта есть тач. Каждый клик
- * проверяется заново: слой, накрывающий кнопку после первого нажатия, —
- * ровно та поломка, ради которой всё это написано.
- */
+/** Player-style click: wait for a visible, uncovered, enabled element, scroll
+ * only where the player could, then use mouse input or a viewport touch.
+ * Recheck every click so an overlay appearing after the first press is caught. */
 export async function realClick(page, selector, { timeout = WAIT_VISIBLE_MS, times = 1 } = {}) {
   const touch = !!page.__forgeTouch;
   let last = null;
@@ -367,8 +331,8 @@ export async function realClick(page, selector, { timeout = WAIT_VISIBLE_MS, tim
     const [res] = await waitHittable(page, [selector], { settleMs: timeout, accept: (r) => r.ok && !r.disabled });
     if (!res.ok || res.disabled) {
       const why = hitMessage(selector, res.ok ? { reason: 'disabled' } : res);
-      const waited = res.reason === 'bad-selector' ? '' : ` — ждали ${timeout} мс`;
-      throw new HitError(`${why}${waited}${times > 1 ? ` (клик ${n} из ${times})` : ''}`);
+      const waited = res.reason === 'bad-selector' ? '' : ` — waited ${timeout} ms`;
+      throw new HitError(`${why}${waited}${times > 1 ? ` (click ${n} of ${times})` : ''}`);
     }
     if (touch) await page.touchscreen.tap(res.ix, res.iy);
     else await page.mouse.click(res.ix, res.iy);
@@ -377,57 +341,51 @@ export async function realClick(page, selector, { timeout = WAIT_VISIBLE_MS, tim
   return last;
 }
 
-/**
- * Секция `hittable` конфига в одну форму. Короткая запись — массив
- * селекторов. Ошибки формы бросаем при загрузке: опечатка в имени вьюпорта
- * иначе всплыла бы посреди прогона, а пустой список тихо выключил бы защиту.
- */
+/** Normalize hittable config from a selector array or object. Validate early:
+ * a bad viewport should not fail halfway through a run, and an empty list
+ * should not silently disable the protection. */
 export function normalizeHittable(raw) {
   if (raw == null || raw === false) return null;
   const obj = Array.isArray(raw) ? { selectors: raw } : raw;
-  if (typeof obj !== 'object') throw new Error('hittable: ожидается массив селекторов или { selectors, viewports, setup, settleMs }');
+  if (typeof obj !== 'object') throw new Error('hittable: expected an array of selectors or { selectors, viewports, setup, settleMs }');
   const selectors = obj.selectors;
   if (!Array.isArray(selectors) || !selectors.length || !selectors.every((s) => typeof s === 'string' && s.trim())) {
-    throw new Error('hittable.selectors: нужен непустой массив CSS-селекторов');
+    throw new Error('hittable.selectors: expected a nonempty array of CSS selectors');
   }
   const viewports = obj.viewports ?? DEFAULT_HIT_VIEWPORTS;
-  if (!Array.isArray(viewports)) throw new Error('hittable.viewports: ожидается массив имён вьюпортов');
+  if (!Array.isArray(viewports)) throw new Error('hittable.viewports: expected an array of viewport names');
   for (const vp of viewports) viewportPreset(vp);
   const setup = obj.setup ?? [];
-  if (!Array.isArray(setup)) throw new Error('hittable.setup: ожидается массив шагов сценария');
+  if (!Array.isArray(setup)) throw new Error('hittable.setup: expected an array of scenario steps');
   const settleMs = obj.settleMs ?? HIT_SETTLE_MS;
-  if (!Number.isFinite(settleMs) || settleMs < 0) throw new Error('hittable.settleMs: ожидается число миллисекунд ≥ 0');
+  if (!Number.isFinite(settleMs) || settleMs < 0) throw new Error('hittable.settleMs: expected a number of milliseconds >= 0');
   return { selectors, viewports, setup, settleMs };
 }
 
-/** Сколько ждать освобождения элементов в проверке: конфиг или умолчание. */
+/** Configured or default wait for elements to become uncovered. */
 export function settleOf(cfg) {
   return cfg?.hittable?.settleMs ?? HIT_SETTLE_MS;
 }
 
-/** Какие селекторы проверять в конце сценария: сценарий может сузить список или отказаться. */
+/** End-of-scenario selectors: a scenario can override the list or opt out. */
 export function hittableFor(sc, cfg) {
   if (sc?.hittable === false) return [];
   if (Array.isArray(sc?.hittable)) return sc.hittable;
   return cfg?.hittable?.selectors || [];
 }
 
-/**
- * Сценарии обхода по вьюпортам: игра поднимается заново, выполняет
- * `hittable.setup` и в конце проверяется обычным порядком. Нужны, чтобы
- * «кликабельно на телефоне» проверялось, даже если все сценарии игры
- * десктопные.
- */
+/** Viewport sweeps boot a fresh game, apply hittable.setup and run the normal
+ * checks. They verify phone reachability even if game scenarios use desktop only. */
 export function sweepScenarios(cfg, explicitViewport = null) {
   const h = cfg?.hittable;
   if (!h || !h.selectors.length) return [];
-  // Явный --viewport перебивает вьюпорт любого сценария — три одинаковых
-  // прогона подряд ничего бы не добавили.
+  // An explicit --viewport overrides every scenario viewport; repeating the
+  // same sweep three times would add no evidence.
   const vps = explicitViewport ? [explicitViewport] : h.viewports;
   return vps.map((vp) => ({
     name: `hittable@${vp}`,
     viewport: vp,
-    note: `Обход «должно оставаться кликабельным» (${vp}): ${h.selectors.join(', ')}`,
+    note: `Must-remain-hittable sweep (${vp}): ${h.selectors.join(', ')}`,
     steps: h.setup,
     builtin: true,
   }));

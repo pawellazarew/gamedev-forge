@@ -1,123 +1,124 @@
 ---
 name: game-forge
-description: Автономный конвейер разработки веб-игр — агент сам запускает игру, играет в неё ботами, снимает и СМОТРИТ скриншоты, меряет производительность, читает баланс по сотням прогонов и критикует результат. Используй когда нужно «прогнать игру», «посмотреть как выглядит», «проверить баланс», «поиграть за меня», «автономный цикл разработки игры», перед сабмитом на платформу, или когда игру надо улучшать без ручного плейтеста на каждой итерации. Инструмент: tools/game-forge.
+description: "Autonomous web-game development pipeline: launch games, run bots, capture and inspect screenshots, measure performance, analyze hundreds of balance simulations and critique the result. Use to run or inspect a game, check balance, play on the user's behalf, iterate autonomously, or verify a game before platform submission without manual playtesting on every iteration. Tool: tools/game-forge."
 ---
 
 # Game Forge
 
-Конвейер, который закрывает петлю обратной связи: игра → измерения и кадры →
-критика → правки → повторный замер. Без него агент правит игру вслепую.
+Close the feedback loop: game → measurements and screenshots → critique → changes
+→ another measurement. Without this loop, an agent edits the game without seeing it.
 
-Код: `tools/game-forge/`. Артефакты каждого прогона: `<игра>/.forge/`.
+Code: `tools/game-forge/`. Run artifacts: `<game>/.forge/`.
 
-## Три уровня доступа к игре
+## Three levels of game access
 
-| Уровень | Что нужно от игры | Что даёт |
+| Level | Game requirements | Result |
 |---|---|---|
-| 1. Наблюдение | ничего | `probe` — стоимость кадра, ошибки, вес, «живой ли кадр» |
-| 2. Сценарии | ничего (или адаптер) | `shots`, `play` — кадры ключевых экранов + ассерты |
-| 3. Симуляция | адаптер `__FORGE__` | `sim`, `analyze` — сотни прогонов, кривая сложности |
+| 1. Observation | none | `probe`: frame work, errors, bundle size, rendering activity |
+| 2. Scenarios | none (or an adapter) | `shots`, `play`: screenshots of key screens and assertions |
+| 3. Simulation | a `__FORGE__` adapter | `sim`, `analyze`: hundreds of runs and a difficulty curve |
 
-Начинай с уровня 1 — он работает с любой веб-игрой сразу.
+Start at level 1: it works immediately with any web game.
 
-## Команды
-
-```bash
-cd tools/game-forge && npm install     # один раз
-node bin/forge.mjs doctor              # проверить окружение
-
-node bin/forge.mjs init  <игра>        # создать forge.config.mjs + заготовки
-node bin/forge.mjs probe <игра>        # техника: кадр, ошибки, вес
-node bin/forge.mjs shots <игра>        # снять кадры по сценариям
-node bin/forge.mjs play  <игра>        # то же + ассерты, падает при провале
-node bin/forge.mjs sim   <игра> --runs 40 --max-ticks 150000
-node bin/forge.mjs analyze <игра>      # пересчитать баланс из последнего sim
-node bin/forge.mjs report  <игра>      # HTML со всем сразу
-node bin/forge.mjs critique <игра>     # бриф для агента-критика
-node bin/forge.mjs all <игра>          # probe + shots + sim + analyze + report
-```
-
-## Ключевое: агент действительно смотрит
-
-После `shots` открывай каждый PNG инструментом **Read** — изображения видны.
-Кадр без просмотра не считается проверенным. Пути к кадрам и подсказки
-«что тут смотреть» лежат в `.forge/latest-shots/shots.json`.
-
-## Как подключить новую игру
-
-1. `node bin/forge.mjs init games-business/моя-игра`
-2. В `forge.config.mjs` указать `root`/`entry`/`viewport`, для 3D — `renderer: 'webgl'`.
-3. Написать сценарии — минимум `first-run` (первые 30 секунд) и `phone`.
-   Кнопки DOM жать шагом `realClick: '#btn'`, а не `eval: "…click()"` или
-   функцией адаптера: DOM-клик проходит сквозь перекрывающий слой, и сценарий
-   зеленеет на игре, где ничего не нажимается. Главные кнопки и панели —
-   в `hittable` конфига: play проверит их в конце сценариев и на трёх вьюпортах.
-4. Для симуляции — адаптер по `tools/game-forge/adapters/ADAPTER.md`:
-   `start / tick / state / act / bots`. Требования к игре: фиксированный шаг,
-   рендер отделён от логики, никакого `Date.now()` в игровой логике.
-
-Готовый пример на живой игре: `games-business/brick-breaker/forge/`.
-
-## Автономный цикл
-
-Цикл гоняется сам (`/loop`, ralph-loop или обычная сессия), но у него должны
-быть границы — иначе он полирует бесконечно.
-
-```
-1. forge all <игра>
-2. Прочитать флаги и открыть кадры
-3. Критики: game-art-critic (кадры), game-balance-critic (цифры)
-4. Взять ОДНУ находку с наибольшим вредом
-5. Починить, прогнать forge заново, сравнить метрику до/после
-6. Записать в <игра>/.forge/JOURNAL.md строку: что менял, что стало
-7. Если 2 итерации подряд не улучшили ни одной метрики — остановиться
-```
-
-### Правила, без которых цикл вредит
-
-- **Стоп-условие обязательно.** Максимум N итераций или «пока флаги high не
-  закончатся». Критерий «пока не станет красиво» недостижим по построению.
-- **Одна правка за итерацию.** Иначе непонятно, что сработало.
-- **Харнесс не трогаем.** Агент, который правит игру, не правит `tools/game-forge`
-  и сценарии: иначе он «починит» тест вместо игры. Замер меняется отдельным
-  осознанным шагом с объяснением, почему старый замер был неверным.
-- **Сначала достоверность, потом выводы.** Флаг `bot-suspect` или таймауты
-  больше 20% означают, что данные о балансе не значат ничего.
-- **`wall` — это где встал бот, а не обязательно игрок.** Прежде чем объявить
-  стену дефектом игры, сделай абляцию: политику, заточенную ровно под эту
-  стадию. Если и она не проходит — тогда стена. На REBOOT «стена на Лаборатории»
-  оказалась тем, что бот не крафтил медь и кремний; с полной цепочкой стадия
-  проходится в 100% прогонов.
-- **Метрика без глаз врёт.** 60 fps и зелёные флаги совместимы с нечитаемым
-  экраном. Смотреть кадры обязательно.
-
-## Второе мнение (Codex)
-
-Наши критики — та же модель, что ведёт разработку: она проверяет саму себя.
-Независимую пару глаз даёт Codex, который умеет смотреть кадры:
+## Commands
 
 ```bash
-codex exec --cd <игра> -i .forge/latest-shots/shots/first-run-03-midgame.png - <<'EOF'
-Ты — состязательный критик визуала. Назови максимум 4 дефекта, отсортированных
-по вреду для игрока: что не так → почему вредно → конкретная правка. Не хвали.
-EOF
+cd tools/game-forge && npm install     # once
+node bin/forge.mjs doctor              # check the environment
+
+node bin/forge.mjs init  <game>        # generate forge.config.mjs and templates
+node bin/forge.mjs probe <game>        # technical checks: frame work, errors, size
+node bin/forge.mjs shots <game>        # capture scenario screenshots
+node bin/forge.mjs play  <game>        # scenarios and assertions; fail on failed checks
+node bin/forge.mjs sim   <game> --runs 40 --max-ticks 150000
+node bin/forge.mjs analyze <game>      # recompute balance from the latest simulation
+node bin/forge.mjs report  <game>      # combine results in HTML
+node bin/forge.mjs critique <game>     # prepare a critic brief
+node bin/forge.mjs all <game>          # probe + shots + sim + analyze + report
 ```
 
-Для цифр баланса — то же самое, но с `analysis.json` в промпте и с установкой
-«попробуй доказать, что вывод неверен». Подробности вызова — агент
-`codex-assistant`. Расхождение между двумя моделями ценнее их согласия:
-там, где они спорят, обычно и есть настоящая проблема.
+## Essential: actually inspect the screenshots
 
-## Что конвейер измерить не может
+After `shots`, open every PNG with **Read** so you can see the image.
+A screenshot is not reviewed until you have opened it. Screenshot paths and
+notes on what to inspect are in `.forge/latest-shots/shots.json`.
 
-Весело ли. Бот не скучает и не раздражается, симуляция меряет проходимость,
-а не удовольствие. Конвейер сужает круг до трёх мест, которые человеку стоит
-потрогать руками — но живой плейтест он не заменяет.
+## Connect a new game
 
-## Смежное
+1. Run `node bin/forge.mjs init games-business/my-game`.
+2. Set `root`/`entry`/`viewport` in `forge.config.mjs`; use `renderer: 'webgl'` for 3D.
+3. Write at least `first-run` (the first 30 seconds) and `phone` scenarios.
+   Press DOM buttons with `realClick: '#btn'` instead of `eval: "…click()"` or
+   adapter functions. Programmatic DOM clicks pass through overlays and can make
+   scenarios pass when the game's controls are unusable. Add primary buttons and
+   panels to the config's `hittable`: play checks them at scenario completion and
+   in three viewports.
+4. For simulation, implement `start / tick / state / act / bots` using
+   `tools/game-forge/adapters/ADAPTER.md`. Game requirements: a fixed logic step,
+   rendering separated from logic, and no `Date.now()` in game logic.
 
-- Кадры → `game-art-critic`, цифры → `game-balance-critic`
-- Отток и онбординг → агент `casual-game-ux-analyst`
-- Сочность и отклик → скилл `game-feel-toolkit`
-- Звук без файлов → скилл `web-audio-sound-designer`
-- 3D-ассеты и спрайты из Blender → скиллы `blender-hardsurface`, `sprite-baking`
+A complete integration with a real game is in `games-business/brick-breaker/forge/`.
+
+## Autonomous loop
+
+The loop can run on its own (`/loop`, ralph-loop or an ordinary session), but
+it needs boundaries to avoid endless polishing.
+
+```text
+1. forge all <game>
+2. Read flags and open screenshots
+3. Ask critics: game-art-critic (screenshots), game-balance-critic (numbers)
+4. Select ONE finding with the greatest player impact
+5. Fix it, rerun forge, compare the metric before and after
+6. Add a line to <game>/.forge/JOURNAL.md: what changed and the result
+7. Stop if two consecutive iterations improve no metric
+```
+
+### Rules that keep the loop useful
+
+- **Set a stopping condition.** At most N iterations, or until no high-severity
+  flags remain. “Until it looks beautiful” has no achievable boundary.
+- **One change per iteration.** Otherwise the cause of improvement is unclear.
+- **Keep the harness separate.** The agent fixing a game must not edit
+  `tools/game-forge` or its scenarios to make checks pass. Change a measurement
+  in a separate, explicit step explaining why the previous measurement was wrong.
+- **Validate data before drawing conclusions.** `bot-suspect` or timeouts above
+  20% make balance data unreliable.
+- **`wall` marks where a bot stopped, not necessarily a player.** Before calling
+  it a game defect, run an ablation: a policy tailored to that exact stage.
+  If that also fails, the wall is real. In REBOOT, the “Laboratory wall” was a
+  bot that did not craft copper and silicon; the full chain cleared the stage
+  in 100% of runs.
+- **Numbers need visual inspection.** 60 fps and passing flags can coexist with
+  an unreadable screen. Inspect the screenshots.
+
+## Second opinion (Codex)
+
+Our critics use the same model as the developer, so they are reviewing their
+own work. Codex provides an independent view and can inspect screenshots:
+
+```bash
+codex exec --cd <game> -i .forge/latest-shots/shots/first-run-03-midgame.png - <<'PROMPT'
+You are an adversarial visual critic. Identify at most four defects, ordered by
+player impact: what is wrong → why it hurts → a concrete fix. Skip praise.
+PROMPT
+```
+
+For balance, use the same approach with `analysis.json` in the prompt and ask
+Codex to “try to prove this conclusion wrong.” The `codex-assistant` agent
+contains invocation details. Disagreement between models is more informative
+than agreement: their dispute often points to the actual problem.
+
+## What the pipeline cannot measure
+
+Fun. Bots do not get bored or frustrated; simulations measure completion rates,
+not enjoyment. The pipeline narrows attention to three places a person should
+try manually, but it does not replace live playtesting.
+
+## Related tools
+
+- Screenshots → `game-art-critic`; numbers → `game-balance-critic`
+- Churn and onboarding → `casual-game-ux-analyst` agent
+- Game feel and responsiveness → `game-feel-toolkit` skill
+- Procedural audio → `web-audio-sound-designer` skill
+- Blender 3D assets and sprites → `blender-hardsurface`, `sprite-baking` skills

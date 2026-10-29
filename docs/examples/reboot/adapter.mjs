@@ -1,18 +1,18 @@
 /**
- * Адаптер REBOOT: Last Engineer для game-forge.
+ * REBOOT: Last Engineer adapter for game-forge.
  *
- * Игра — Phaser 3 с idle-тиком раз в секунду (`IdleSystem.tick()` из MainScene).
- * Один forge-тик = одна игровая секунда, поэтому `--max-ticks 14400` это 4 часа
- * игрового времени.
+ * The Phaser 3 game has a one-second idle tick (IdleSystem.tick() in MainScene).
+ * One forge tick is one game second, so --max-ticks 14400 represents 4 hours
+ * of game time.
  *
- * Прогон НЕ перезапускает сцену: жизненный цикл Phaser требует кадров, а в
- * симуляции рендер выключен. Вместо этого состояние систем сбрасывается
- * напрямую — тем же способом, что и `MainScene._initNewGame()`.
+ * A run does NOT restart the scene: the Phaser lifecycle requires frames,
+ * while simulation disables rendering. Instead, system state is reset
+ * directly, as in MainScene._initNewGame().
  */
 export default {
   autostart: true,
 
-  // один тик = одна игровая секунда (IDLE_TICK_MS = 1000), а не кадр
+  // One tick = one game second (IDLE_TICK_MS = 1000), not one frame.
   tickRate: 1,
 
   install() {
@@ -20,8 +20,8 @@ export default {
     const MATERIALS = ['steel', 'copper', 'polymer', 'silicon', 'batteries'];
     const COMPONENTS = ['microchips', 'servomotors', 'ai_cores', 'nanomaterial'];
 
-    // Стадии прогрессии играют роль «уровней»: аналитика построит по ним
-    // кривую сложности и покажет, на чём застревает игрок.
+    // Progression stages act as levels: analysis plots their difficulty
+    // curve and shows where the player gets stuck.
     const MILESTONES = [
       { level: 1, name: 'first_gatherer', test: (s) => s.robots >= 1 },
       { level: 2, name: 'workshop', test: (s) => s.buildingsByType.workshop >= 1 },
@@ -43,14 +43,14 @@ export default {
     const main = () => game()?.scene?.getScene('MainScene');
 
     /**
-     * Поднимает MainScene, не дожидаясь кадров. Phaser создаёт сцену только
-     * внутри игрового шага, а в симуляции rAF выключен — поэтому крутим
-     * `game.loop.step()` руками. Сценарии при этом стартуют из меню, как
-     * настоящий игрок, а не «телепортируются» в игру при загрузке.
+     * Start MainScene without waiting for frames. Phaser creates scenes only
+     * inside a game step, but simulation disables rAF, so we call
+     * game.loop.step() manually. Scenarios still start from the menu like
+     * a real player, rather than teleporting into the game on load.
      */
     function ensureMainScene() {
       const g = game();
-      if (!g) throw new Error('__PHASER_GAME__ нет — игра не загрузилась');
+      if (!g) throw new Error('__PHASER_GAME__ missing — game did not load');
       if (main()?.resourceSystem && g.scene.isActive('MainScene')) return;
 
       g.scene.stop('MenuScene');
@@ -60,7 +60,7 @@ export default {
       for (let i = 0; i < 20 && !(main()?.resourceSystem && g.scene.isActive('MainScene')); i++) {
         g.loop.step(now() + i);
       }
-      if (!main()?.resourceSystem) throw new Error('MainScene не поднялась за 20 шагов');
+      if (!main()?.resourceSystem) throw new Error('MainScene did not start within 20 steps');
     }
 
     function snapshot() {
@@ -95,17 +95,17 @@ export default {
       start(opts = {}) {
         ensureMainScene();
         const m = main();
-        if (!m) throw new Error('MainScene не готова');
+        if (!m) throw new Error('MainScene is not ready');
         events.length = 0;
         tickNo = 0;
         stage = 0;
         stageStart = 0;
         robotSeq = 0;
 
-        try { localStorage.removeItem(SAVE_KEY); } catch { /* приватный режим */ }
+        try { localStorage.removeItem(SAVE_KEY); } catch { /* private browsing */ }
 
-        // Ровно то же, что делает MainScene._initNewGame(), но без перезапуска
-        // сцены: Phaser поднимает сцену по кадрам, а кадров в симуляции нет.
+        // Same as MainScene._initNewGame(), without restarting the scene:
+        // Phaser starts scenes over frames, but simulation has no frames.
         m.resourceSystem.init();
         m.buildingSystem.init();
         m.robotSystem.init();
@@ -122,9 +122,9 @@ export default {
         const m = main();
         if (!m) return;
         for (let i = 0; i < n; i++) {
-          // Вызываем ровно то, что вызывает сама игра: если что-то не тикает
-          // в проде (например, тех-дерево), симуляция обязана это показать,
-          // а не компенсировать.
+          // Call exactly what the game calls: if something does not tick in
+          // production (for example, the tech tree), simulation must expose
+          // the defect rather than compensate for it.
           m.idleSystem.tick();
           tickNo++;
 
@@ -146,17 +146,17 @@ export default {
         }
       },
 
-      render() { /* рендерит сам Phaser: сцена живёт, пока идут кадры */ },
+      render() { /* Phaser renders while scene frames are running. */ },
 
       state() {
         const s = snapshot();
         if (!s) return { over: true, win: false, score: 0, level: 0, error: 'no-scene' };
         const total = Object.values(s.res).reduce((a, b) => a + b, 0);
-        // Счёт = прогресс, а не куча ресурсов: иначе выигрывает тот, кто копит
-        // и ничего не строит, хотя по стадиям он отстаёт.
-        // ВАЖНО: stage — сколько стадий ПРОЙДЕНО, level — номер текущей, то есть
-        // level = stage + 1. Смотреть надо на stagesCleared: «уровень 6» значит
-        // «пять стадий позади, шестая в работе», а не «шесть пройдено».
+        // Score = progress, not a resource pile: otherwise hoarding without
+        // building wins despite lagging behind in progression stages.
+        // IMPORTANT: stage counts COMPLETED stages; level is the current number:
+        // level = stage + 1. Use stagesCleared: level 6 means five stages
+        // completed and the sixth in progress, not six completed stages.
         const score = stage * 10000 + Math.round(total / 10);
         return {
           over: stage >= MILESTONES.length,
@@ -200,8 +200,8 @@ export default {
       events() { return events.slice(); },
 
       /**
-       * Действия бота. Цены нарочно не зашиты: бот пробует действие и смотрит
-       * на результат — так адаптер переживает любую переработку баланса.
+       * Bot actions. Prices are deliberately not hardcoded: the bot attempts
+       * an action and checks its result, surviving changes to game balance.
        */
       act(input) {
         const m = main();
@@ -221,10 +221,10 @@ export default {
             return ok;
           }
           case 'spread': {
-            // Раскидать добытчиков по списку целей циклически. Идемпотентно:
-            // возвращает true, если после вызова распределение соответствует
-            // списку, а не «поменялось ли что-то» — иначе политика примет
-            // уже правильную расстановку за неудачу.
+            // Assign gatherers cyclically across targets. Idempotent:
+            // returns true when the resulting assignment matches the list,
+            // rather than when anything changed; otherwise the policy would
+            // treat an already-correct assignment as a failure.
             const targets = input.targets || ['scrap', 'concrete'];
             const all = m.robotSystem.getAll();
             if (!all.length) return false;
@@ -248,13 +248,13 @@ export default {
             return m.techTreeSystem.startResearch(input.tech);
           }
           case 'craft': {
-            // Рецепт собираем здесь: RECIPES живут в модуле и в window не попадают.
-            // Поля совпадают с RecipeDef — системе больше ничего не нужно.
+            // Build recipes here: RECIPES lives in a module, not on window.
+            // Fields match RecipeDef; the system needs nothing else.
             const recipes = {
-              steel: { id: 'recipe_steel', name: 'Сталь', input: { scrap: 3 }, outputResource: 'steel', outputAmount: 1, baseTime: 15, energyCost: 1, station: 'smelter' },
-              copper: { id: 'recipe_copper', name: 'Медь', input: { wires: 3 }, outputResource: 'copper', outputAmount: 1, baseTime: 20, energyCost: 1, station: 'smelter' },
-              polymer: { id: 'recipe_polymer', name: 'Полимер', input: { plastic: 3 }, outputResource: 'polymer', outputAmount: 1, baseTime: 18, energyCost: 1, station: 'smelter' },
-              silicon: { id: 'recipe_silicon', name: 'Кремний', input: { sand: 2 }, outputResource: 'silicon', outputAmount: 1, baseTime: 30, energyCost: 3, station: 'smelter' },
+              steel: { id: 'recipe_steel', name: 'Steel', input: { scrap: 3 }, outputResource: 'steel', outputAmount: 1, baseTime: 15, energyCost: 1, station: 'smelter' },
+              copper: { id: 'recipe_copper', name: 'Copper', input: { wires: 3 }, outputResource: 'copper', outputAmount: 1, baseTime: 20, energyCost: 1, station: 'smelter' },
+              polymer: { id: 'recipe_polymer', name: 'Polymer', input: { plastic: 3 }, outputResource: 'polymer', outputAmount: 1, baseTime: 18, energyCost: 1, station: 'smelter' },
+              silicon: { id: 'recipe_silicon', name: 'Silicon', input: { sand: 2 }, outputResource: 'silicon', outputAmount: 1, baseTime: 30, energyCost: 3, station: 'smelter' },
             };
             const recipe = recipes[input.recipe || 'steel'];
             if (!recipe) return false;
@@ -268,14 +268,14 @@ export default {
       },
 
       bots: {
-        /** Базовая линия: игрок открыл игру и ушёл. Сколько даёт чистый idle. */
+        /** Baseline: player opens the game and leaves. Measures pure idle progress. */
         afk() { return null; },
 
         /**
-         * Абляция: копит строго на Лабораторию и не отвлекается на крафт.
-         * Нужен, чтобы отделить «игра не пускает дальше» от «политика
-         * optimizer растрачивает ресурсы» — иначе стена на стадии 6
-         * недоказуема.
+         * Ablation: saves exclusively for the Laboratory without crafting.
+         * Separates the game blocking progress from the optimizer policy
+         * wasting resources; otherwise a wall at stage 6 cannot be
+         * demonstrated.
          */
         lab_rush(state, ctx) {
           if (ctx.tick % 3 !== 0) return null;
@@ -296,9 +296,9 @@ export default {
         },
 
         /**
-         * Здравый игрок: делит добытчиков между металлоломом и бетоном,
-         * ставит склад, когда упирается в потолок хранения.
-         * Действует раз в 5 игровых секунд — как человек без секундомера.
+         * Sensible player: splits gatherers between scrap and concrete,
+         * builds storage when reaching the capacity limit.
+         * Acts every 5 game seconds, like a person without a stopwatch.
          */
         builder(state, ctx) {
           if (ctx.tick % 5 !== 0) return null;
@@ -307,8 +307,8 @@ export default {
           const failed = (t) => ctx.tick - (m[`fail_${t}`] ?? -1e9) < 600;
 
           if (state.robots < 3 && !failed('robot')) return { type: 'robot', role: 'gatherer' };
-          // Пересобирать расстановку каждый раз, когда роботов стало больше:
-          // новый робот создаётся с задачей на металлолом и сам на бетон не уйдёт
+          // Reassign whenever the robot count grows: new robots start gathering
+          // scrap and will not switch to concrete on their own.
           if (m.spreadFor !== state.robots || state.assigned < state.robots) {
             m.spreadFor = state.robots;
             return { type: 'spread', targets: ['scrap', 'concrete'] };
@@ -318,9 +318,9 @@ export default {
         },
 
         /**
-         * Игрок, который выжимает из игры всё: распределяет добычу под нужды
-         * цепочки, расширяет склад, строит Плавильню и ставит крафт стали.
-         * Если и он не двигается дальше — упирается не навык, а сама игра.
+         * Optimizer: assigns gathering to the resource chain, expands storage,
+         * builds the Smelter and starts steel production. If this player
+         * cannot progress either, the limitation is the game rather than skill.
          */
         optimizer(state, ctx) {
           if (ctx.tick % 3 !== 0) return null;
@@ -329,15 +329,15 @@ export default {
           if (ctx.lastOk === false && key) m[`fail_${key}`] = ctx.tick;
           const failed = (k) => ctx.tick - (m[`fail_${k}`] ?? -1e9) < 900;
 
-          // Идентификаторы из TechId — с выдуманными startResearch молча вернёт false
+          // Use TechId identifiers; invented IDs make startResearch silently return false.
           m.techQueue = m.techQueue ?? ['basic_metallurgy', 'basic_diagnostics', 'expanded_storage'];
 
-          // Добыча идёт под текущую потребность цепочки, а не «всё в металлолом»
+          // Gather for the current chain requirement rather than putting everyone on scrap.
           const need = [];
           if (state.concrete < 40) need.push('concrete');
           if (state.wires < 20) need.push('wires');
-          // Лаборатория стоит 15 стали + 10 меди + 5 кремния: без песка и
-          // проволоки цепочка обрывается на второй же постройке
+          // The Laboratory costs 15 steel + 10 copper + 5 silicon: without sand
+          // and wires the chain breaks at its second building.
           if (state.sand < 30) need.push('sand');
           if (state.data < 15) need.push('data');
           need.push('scrap');
@@ -345,11 +345,11 @@ export default {
           if (m.focus !== wanted) { m.focus = wanted; return { type: 'spread', targets: need }; }
           if (state.assigned < state.robots) return { type: 'spread', targets: need };
 
-          // Потолок хранения перекрывает всё остальное
+          // The storage cap blocks everything else.
           if (state.full && !failed('build_storage')) return { type: 'build', building: 'storage' };
           if (state.robots < 6 && !failed('robot_')) return { type: 'robot', role: 'gatherer' };
           if (!state.smelters && !failed('build_smelter')) return { type: 'build', building: 'smelter' };
-          // Крафтим ровно то, чего не хватает на Лабораторию
+          // Craft exactly what is missing for the Laboratory.
           if (state.smelters) {
             if (state.steel < 20 && state.scrap > 20 && !failed('craft_steel')) return { type: 'craft', recipe: 'steel' };
             if (state.copper < 12 && state.wires > 10 && !failed('craft_copper')) return { type: 'craft', recipe: 'copper' };

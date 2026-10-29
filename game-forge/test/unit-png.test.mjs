@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
 import { decodePng, frameStats } from '../src/png.mjs';
 
-/** Минимальный энкодер PNG — чтобы тест не зависел от внешних файлов. */
+/** Minimal PNG encoder keeps tests independent of external files. */
 function encodePng(width, height, rgba, { colorType = 6 } = {}) {
   const channels = colorType === 6 ? 4 : 3;
   const raw = Buffer.alloc(height * (width * channels + 1));
   for (let y = 0; y < height; y++) {
-    raw[y * (width * channels + 1)] = 0; // фильтр None
+    raw[y * (width * channels + 1)] = 0; // filter None
     rgba.copy(raw, y * (width * channels + 1) + 1, y * width * channels, (y + 1) * width * channels);
   }
   const chunk = (type, data) => {
@@ -46,7 +46,7 @@ function solid(width, height, [r, g, b]) {
 }
 
 describe('decodePng', () => {
-  test('размеры и пиксели читаются как записаны', () => {
+  test('dimensions and pixels match the encoded values', () => {
     const img = decodePng(solid(8, 4, [10, 20, 30]));
     assert.equal(img.width, 8);
     assert.equal(img.height, 4);
@@ -54,26 +54,26 @@ describe('decodePng', () => {
     assert.deepEqual([...img.data.subarray(0, 4)], [10, 20, 30, 255]);
   });
 
-  test('RGB без альфы тоже поддерживается', () => {
+  test('RGB without alpha is also supported', () => {
     const px = Buffer.alloc(4 * 4 * 3, 77);
     const img = decodePng(encodePng(4, 4, px, { colorType: 2 }));
     assert.equal(img.channels, 3);
     assert.equal(img.data[0], 77);
   });
 
-  test('не-PNG отвергается внятной ошибкой', () => {
-    assert.throws(() => decodePng(Buffer.from('это не картинка')), /не PNG/);
+  test('non-PNG input is rejected with a clear error', () => {
+    assert.throws(() => decodePng(Buffer.from('not an image')), /not a PNG/);
   });
 });
 
-describe('frameStats — «живой ли кадр»', () => {
-  test('однотонная заливка распознаётся как мёртвый кадр', () => {
+describe('frameStats — is the frame alive', () => {
+  test('solid fill is recognized as a dead frame', () => {
     const s = frameStats(solid(64, 64, [0, 0, 0]));
     assert.equal(s.distinctColors, 1);
-    assert.equal(s.maxLum - s.minLum, 0, 'ровно тот случай, ради которого проверка и нужна');
+    assert.equal(s.maxLum - s.minLum, 0, 'exactly the case this check is intended to detect');
   });
 
-  test('картинка с содержимым даёт разброс цвета и яркости', () => {
+  test('image content produces color and brightness variation', () => {
     const w = 64, h = 64;
     const px = Buffer.alloc(w * h * 4);
     for (let i = 0; i < w * h; i++) {
@@ -85,8 +85,8 @@ describe('frameStats — «живой ли кадр»', () => {
     assert.ok(s.maxLum - s.minLum > 50);
   });
 
-  test('яркость считается по светимости, а не по среднему каналу', () => {
-    // Чистый зелёный субъективно ярче чистого синего той же величины
+  test('brightness uses luminance rather than mean channel values', () => {
+    // Pure green is perceived as brighter than pure blue of the same intensity
     const green = frameStats(solid(16, 16, [0, 255, 0]));
     const blue = frameStats(solid(16, 16, [0, 0, 255]));
     assert.ok(green.meanLum > blue.meanLum * 5);

@@ -4,30 +4,22 @@ import { resolveViewport } from './browser.mjs';
 import { realClick, hittableChecks, hittableFor, sweepScenarios, settleOf, HitError, WAIT_VISIBLE_MS } from './hittest.mjs';
 import { runDir, linkLatest, writeJson, filterNoise, color, verdictMark } from './util.mjs';
 
-/**
- * Один движок для двух команд: `shots` (снять кадры для арт-критика) и
- * `play` (пройти сценарий и проверить ассерты). Разница только в том,
- * падаем ли мы на непройденном expect.
- *
- * Шаг — объект с любым набором ключей, они применяются в этом порядке:
- *   goto, forge, eval, click, realClick, move, key, type, tick, wait, waitFor,
- *   hittable, expect, shot
- *
- * В конце каждого сценария селекторы из `hittable` конфига (или сценария)
- * проверяются на кликабельность, а к сценариям добавляется обход
- * `hittable@<вьюпорт>` — см. hittest.mjs.
- */
+/** Shared engine for `shots` (capture frames) and `play` (run assertions).
+ * They differ only in whether a failed expect makes the command fail.
+ * Step keys execute in this order: goto, forge, eval, click, realClick, move,
+ * key, type, tick, wait, waitFor, hittable, expect, shot.
+ * At scenario end, check config/scenario hittable selectors and add
+ * hittable@<viewport> sweeps; see hittest.mjs. */
 export async function runScenarios(cfg, opts = {}) {
   const { only = null, seed = 1, stamp, kind = 'shots', headless = true, viewport = null } = opts;
   const adapter = cfg.adapterFile ? await loadAdapter(cfg) : null;
-  // Обход по вьюпортам — обычные сценарии: их так же выбирает --only и так же
-  // видит отчёт.
+  // Viewport sweeps are ordinary scenarios: --only selects them and reports include them.
   const all = [...await loadScenarios(cfg), ...sweepScenarios(cfg, viewport)];
   const list = only ? all.filter((s) => s.name === only) : all;
   if (!list.length) {
     throw new Error(only
-      ? `Сценарий "${only}" не найден. Есть: ${all.map((s) => s.name).join(', ') || '(ни одного)'}`
-      : `Сценарии не заданы. Добавь scenarios в forge.config.mjs`);
+      ? `Scenario "${only}" not found. Available: ${all.map((s) => s.name).join(', ') || '(none)'}`
+      : `No scenarios configured. Set scenarios in forge.config.mjs`);
   }
 
   const dir = runDir(cfg.dir, kind, stamp);
@@ -35,9 +27,8 @@ export async function runScenarios(cfg, opts = {}) {
   const results = [];
 
   for (const sc of list) {
-    // Тот же порядок, что у probe: явный флаг → вьюпорт сценария → конфиг.
-    // Иначе `forge all --viewport phone` кладёт в один отчёт телефонные числа
-    // и десктопные кадры, и арт-критик судит не ту сцену.
+    // Match probe precedence: explicit flag, scenario viewport, config.
+    // Otherwise forge all --viewport phone mixes phone metrics with desktop shots.
     const vp = resolveViewport(viewport, sc, cfg);
     const ctx = await boot(cfg, { viewport: vp, seed, adapter, headless });
     const shots = [];
@@ -48,21 +39,21 @@ export async function runScenarios(cfg, opts = {}) {
         at = i;
         await applyStep(ctx.page, step, { sc, i, shotsDir, shots, checks, cfg });
       }
-      // Проверяем только дошедший до конца сценарий: после упавшего шага
-      // игра стоит посреди действия, и перекрытие там ничего не доказывает.
+      // Only check scenarios that reached the end. An overlay halfway through a
+      // failed action does not prove that the final interface is blocked.
       const sels = hittableFor(sc, cfg);
       if (sels.length) {
-        // keepOnFail: сценарий закончился, и кадр провала должен показать
-        // перекрытие там, куда указывают координаты сообщения
+        // keepOnFail: the scenario has ended, so the failure screenshot should show
+        // the overlay at the coordinates reported in the message.
         const hit = await hittableChecks(ctx.page, sels, settleOf(cfg), { keepOnFail: true });
         checks.push(...hit);
         const failed = hit.find((c) => c.status === 'fail');
         if (failed) await failShot(ctx.page, sc, shotsDir, shots, failed.detail);
       }
     } catch (err) {
-      // Номер шага, а не число проверок: «шаг 3» на седьмом шаге отправлял искать не там
+      // Report the step index, not the count of checks, to identify the actual failed step.
       const msg = err instanceof HitError ? err.message : String(err);
-      checks.push({ name: `шаг ${at + 1}`, status: 'fail', detail: msg.slice(0, 400) });
+      checks.push({ name: `step ${at + 1}`, status: 'fail', detail: msg.slice(0, 400) });
       if (err instanceof HitError) await failShot(ctx.page, sc, shotsDir, shots, msg);
     } finally {
       const errors = filterNoise(ctx.errors());
@@ -86,11 +77,11 @@ export async function runScenarios(cfg, opts = {}) {
     seed,
     scenarios: results,
     status: results.some((r) => r.status === 'fail') ? 'fail' : 'pass',
-    // Явный указатель для агента-критика: что смотреть и с чем сравнивать.
+    // Explicit review pointers: what to inspect and what to compare against.
     critique: {
       shotsDir,
       referencesDir: cfg.referencesDir,
-      hint: 'Сравни каждый кадр с эталонами из referencesDir и с note сценария.',
+      hint: 'Compare each screenshot against referencesDir and the scenario note.',
     },
   };
   writeJson(path.join(dir, `${kind}.json`), summary);
@@ -98,10 +89,8 @@ export async function runScenarios(cfg, opts = {}) {
   return { summary, dir };
 }
 
-/**
- * Выполнить один шаг сценария. Экспортируется, чтобы probe мог довести игру
- * до нужной сцены тем же механизмом, а не заводить второй похожий.
- */
+/** Run one scenario step. Exported so probe prepares the same scene through
+ * the same mechanism instead of implementing a second version. */
 export async function applyStep(page, step, ctx) {
   const { sc, i, shotsDir, shots, checks } = ctx;
 
@@ -111,7 +100,7 @@ export async function applyStep(page, step, ctx) {
     const [method, ...args] = Array.isArray(step.forge) ? step.forge : [step.forge];
     await page.evaluate(({ m, a }) => {
       const api = window.__FORGE__;
-      if (!api || typeof api[m] !== 'function') throw new Error(`__FORGE__.${m}() нет — проверь адаптер`);
+      if (!api || typeof api[m] !== 'function') throw new Error(`__FORGE__.${m}() is missing; check the adapter`);
       return api[m](...a);
     }, { m: method, a: args });
   }
@@ -121,15 +110,15 @@ export async function applyStep(page, step, ctx) {
   if (step.click) {
     const box = await gameBox(page);
     if (step.click === 'center') await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    // Клик по селектору — только настоящим вводом и только если сверху лежит
-    // сам элемент. page.click Playwright тоже проверял перекрытие, но молча
-    // ждал полминуты, не умел касание и не говорил, какой слой мешает.
+    // Selector clicks use real input only when the element is on top. Playwright
+    // page.click also checks overlays, but waits 30 seconds without identifying
+    // the blocking layer and does not provide touch input.
     else if (typeof step.click === 'string') await realClick(page, step.click, clickOpts(step));
     else await page.mouse.click(box.x + step.click.x, box.y + step.click.y);
   }
 
-  // Клик игрока, а не `el.click()`: DOM-клик проходит сквозь любой слой сверху,
-  // и сценарий зеленел на игре, где не нажимается ни одна кнопка.
+  // Use player input instead of el.click(): DOM clicks bypass overlays and can
+  // pass a scenario even when no button is physically clickable.
   if (step.realClick) await realClick(page, step.realClick, clickOpts(step));
 
   if (step.move) {
@@ -140,16 +129,16 @@ export async function applyStep(page, step, ctx) {
   if (step.key) await page.keyboard.press(step.key);
   if (step.type) await page.keyboard.type(step.type);
 
-  // Логические кадры без реального времени: 600 «тиков» — это 10 секунд игры за ~50 мс.
-  // С `bot` за руль садится политика — иначе кадр «геймплея» покажет игру,
-  // в которой никто не играет, то есть проигрыш через десять секунд.
+  // Advance logic without wall-clock time: 600 ticks cover 10 game seconds in ~50 ms.
+  // With bot, the policy drives; otherwise the gameplay screenshot may show
+  // a game where nobody plays and the player loses after ten seconds.
   if (step.tick) {
     await page.evaluate(({ n, bot }) => {
       const api = window.__FORGE__;
-      if (!api?.tick) throw new Error('__FORGE__.tick() нет — шаг tick требует адаптер');
+      if (!api?.tick) throw new Error('__FORGE__.tick() is missing; a tick step requires an adapter');
       if (bot) {
         const policy = api.bots?.[bot];
-        if (!policy) throw new Error(`Бот "${bot}" не объявлен адаптером`);
+        if (!policy) throw new Error(`Bot "${bot}" is not defined by the adapter`);
         const memory = {};
         let lastAction = null, lastOk = null;
         for (let i = 0; i < n; i++) {
@@ -169,12 +158,12 @@ export async function applyStep(page, step, ctx) {
   if (step.wait) await page.waitForTimeout(step.wait);
   if (step.waitFor) await page.waitForFunction(step.waitFor, null, { timeout: step.timeout || 10000 });
 
-  // Проверка без клика: провал записывается, как у expect, и сценарий идёт дальше.
-  // При необходимости докручивает к элементу — как сделал бы игрок.
+  // Check without clicking: record failure like expect and continue the scenario.
+  // Scroll to the element if necessary, as a player would.
   if (step.hittable) {
     const sels = Array.isArray(step.hittable) ? step.hittable : [step.hittable];
-    // Прокрутку не оставляем даже на провале: дальше идут шаги, и в play они
-    // шли бы по прокрученной странице, а в probe — по исходной
+    // Restore scrolling even on failure so later play steps use the same page
+    // position as probe.
     const hit = await hittableChecks(page, sels, step.timeout ?? settleOf(ctx.cfg));
     checks.push(...hit);
     const failed = hit.find((c) => c.status === 'fail');
@@ -184,12 +173,12 @@ export async function applyStep(page, step, ctx) {
   if (step.expect) {
     const ok = await page.evaluate(step.expect.fn ?? step.expect);
     const msg = step.expect.msg || 'expect';
-    // Строго true, а не «истинно»: естественная форма ассерта «враги
-    // заспавнены» — это `[...document.querySelectorAll('.enemy')]`, и пустой
-    // массив истинен. Такой expect проходил бы ровно на пустой сцене.
+    // Require strict true. A natural enemies-spawned assertion may return
+    // [...document.querySelectorAll(".enemy")]; an empty array is truthy and
+    // would incorrectly pass on an empty scene.
     const detail = ok === true ? ''
-      : typeof ok === 'boolean' ? `условие ложно на шаге ${i + 1}`
-        : `шаг ${i + 1}: expect вернул ${preview(ok)} вместо true/false — ассерт написан неверно`;
+      : typeof ok === 'boolean' ? `condition is false at step ${i + 1}`
+        : `step ${i + 1}: expect returned ${preview(ok)} instead of true/false; invalid assertion`;
     checks.push({ name: msg, status: ok === true ? 'pass' : 'fail', detail });
   }
 
@@ -205,22 +194,20 @@ function clickOpts(step) {
   return { timeout: step.timeout || WAIT_VISIBLE_MS, times: step.times || 1 };
 }
 
-/**
- * Кадр страницы целиком в момент провала: перекрытие — это про вёрстку
- * вокруг канваса, и критику нужно видеть, что именно легло сверху.
- */
+/** Capture the full page on failure: overlays involve layout around the canvas,
+ * so the reviewer needs to see which layer covers it. */
 async function failShot(page, sc, shotsDir, shots, note, i = null) {
   if (!shotsDir) return;
   const label = i == null ? 'hittable' : `hittable-${i + 1}`;
   const file = path.join(shotsDir, `${sc.name}-${label}.png`);
-  // Не снялось — провал уже записан, подменять его ошибкой скриншота нельзя
+  // The original failure is already recorded; a screenshot error must not replace it.
   try {
     await page.screenshot({ path: file });
-    shots.push({ file, label, note: `Провал кликабельности: ${note}`, step: i == null ? null : i + 1 });
-  } catch { /* кадра не будет */ }
+    shots.push({ file, label, note: `Hit-test failure: ${note}`, step: i == null ? null : i + 1 });
+  } catch { /* Screenshot unavailable. */ }
 }
 
-/** Короткое человекочитаемое значение для сообщения о неверном ассерте. */
+/** Short human-readable value for an invalid assertion result. */
 function preview(v) {
   if (v === null || v === undefined) return String(v);
   try {
@@ -241,9 +228,9 @@ async function gameBox(page) {
 export function printScenarios(summary) {
   console.log(color.b(`\n${summary.game} — ${summary.kind}`));
   for (const r of summary.scenarios) {
-    console.log(`  ${verdictMark(r.status)} ${r.scenario} ${color.dim(`(${r.viewport}, кадров: ${r.shots.length})`)}`);
+    console.log(`  ${verdictMark(r.status)} ${r.scenario} ${color.dim(`(${r.viewport}, shots: ${r.shots.length})`)}`);
     for (const c of r.checks) if (c.status !== 'pass') console.log(`      ${verdictMark(c.status)} ${c.name} — ${c.detail}`);
     for (const e of r.errors.slice(0, 3)) console.log(`      ${color.bad('err')} ${e.kind}: ${e.text.slice(0, 160)}`);
   }
-  console.log(color.dim(`  кадры: ${summary.critique.shotsDir}`));
+  console.log(color.dim(`  screenshots: ${summary.critique.shotsDir}`));
 }

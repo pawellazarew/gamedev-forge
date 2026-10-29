@@ -1,51 +1,51 @@
 /**
- * Обе половины гейта на одной странице. Здоровые сценарии обязаны проходить —
- * ложный красный блокирует работу так же, как ложный зелёный её пропускает.
- * Сломанные обязаны краснеть и называть перекрывающий слой.
+ * Both sides of the gate on one page. Healthy scenarios must pass:
+ * false failures block work just as false passes let defects through.
+ * Broken scenarios must fail and identify the covering layer.
  */
 export default [
   {
     name: 'click-ok',
     viewport: 'desktop',
-    note: 'Арт не ловит клики — настоящий клик мышью доходит до кнопки дважды',
+    note: 'Artwork ignores input — two real mouse clicks reach the button',
     steps: [
       { eval: 'window.__game.safe()' },
       { realClick: '#go', times: 2 },
-      { expect: { fn: () => window.clicks === 2, msg: 'оба клика дошли' } },
-      { expect: { fn: () => window.lastPointer === 'mouse', msg: 'на десктопе клик мышью' } },
+      { expect: { fn: () => window.clicks === 2, msg: 'both clicks reached the button' } },
+      { expect: { fn: () => window.lastPointer === 'mouse', msg: 'desktop uses a mouse click' } },
     ],
   },
   {
     name: 'tap-ok',
     viewport: 'phone',
-    note: 'То же на телефоне — касанием',
+    note: 'The same on a phone, using touch',
     steps: [
       { eval: 'window.__game.safe()' },
       { realClick: '#go' },
-      { expect: { fn: () => window.clicks === 1, msg: 'касание дошло' } },
-      { expect: { fn: () => window.lastPointer === 'touch', msg: 'на телефоне касание, а не мышь' } },
+      { expect: { fn: () => window.clicks === 1, msg: 'touch reached the button' } },
+      { expect: { fn: () => window.lastPointer === 'touch', msg: 'phone uses touch rather than a mouse' } },
     ],
   },
   {
     name: 'second-click-covered',
     viewport: 'desktop',
-    note: 'Первый клик проходит (урок поднял кнопку), второй упирается в арт',
+    note: 'First click passes because the tutorial raised the button; second hits artwork',
     steps: [{ realClick: '#go', times: 2 }],
   },
   {
     name: 'dom-click-hides-it',
     viewport: 'desktop',
-    note: 'DOM-клики проходят сквозь арт, шаги зелёные — ловит только проверка в конце сценария',
+    note: 'DOM clicks bypass artwork and steps pass; only the end-of-scenario check detects it',
     steps: [
       { eval: 'window.__game.clickGo(); window.__game.clickGo()' },
-      { expect: { fn: () => window.clicks === 2, msg: 'DOM-клики засчитаны сквозь арт' } },
+      { expect: { fn: () => window.clicks === 2, msg: 'DOM clicks registered through the artwork' } },
     ],
   },
   {
     name: 'opted-out',
     viewport: 'desktop',
-    // Сценарий, который заканчивается на открытой модалке, законно
-    // перекрывает интерфейс и отказывается от проверки в конце.
+    // A scenario ending with an open modal legitimately covers the interface
+    // and opts out of the end-of-scenario check.
     hittable: false,
     steps: [{ eval: 'window.__game.clickGo()' }],
   },

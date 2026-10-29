@@ -1,25 +1,25 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Late Canvas (фикстура)</title>
+<title>Late Canvas (fixture)</title>
 <!--
-  Здоровая игра, которая показывает канвас после загрузки (заставка, прелоадер).
-  Кэш «видимости» по clientWidth запоминал первый ответ навсегда и навсегда же
-  объявлял такую игру нерисующей.
+  A healthy game that shows its canvas after loading (splash or preloader).
+  Caching visibility by clientWidth retained the first result forever,
+  permanently declaring this game unable to render.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}#game{display:none;margin:0 auto}</style>
-<div id="splash" style="color:#8b949e;font:16px sans-serif;padding:20px">загрузка…</div>
+<div id="splash" style="color:#8b949e;font:16px sans-serif;padding:20px">loading…</div>
 <canvas id="game" width="640" height="400"></canvas>
 <script>
   const cv = document.getElementById('game');
   const ctx = cv.getContext('2d');
   let t = 0;
-  (function loop() {                          // цикл идёт с самого начала
+  (function loop() {                          // loop runs from the start
     t++;
     ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
     ctx.fillStyle = '#58a6ff'; ctx.fillRect((t * 4) % 560, 160, 80, 80);
     requestAnimationFrame(loop);
   })();
-  setTimeout(() => {                          // а канвас появляется позже
+  setTimeout(() => {                          // canvas appears later
     document.getElementById('splash').remove();
     cv.style.display = 'block';
   }, 300);

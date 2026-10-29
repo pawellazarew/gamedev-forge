@@ -1,15 +1,15 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Tiny Game — фикстура game-forge</title>
+<title>Tiny Game — game-forge fixture</title>
 <style>
   body { margin: 0; background: #10131a; display: grid; place-items: center; height: 100vh; }
   canvas { image-rendering: pixelated; }
 </style>
 <canvas id="game" width="320" height="240"></canvas>
 <script>
-// Минимальная игра для проверки самого конвейера: ловим падающие блоки
-// корзиной. Фиксированный шаг, вся логика в update(), рендер отдельно —
-// ровно те требования, которые ADAPTER.md предъявляет к настоящим играм.
+// Minimal pipeline test game: catch falling blocks with a basket.
+// Fixed step, all logic in update(), and separate rendering — exactly
+// what ADAPTER.md requires from real games.
 var W = 320, H = 240;
 var canvas = document.getElementById('game');
 var ctx = canvas.getContext('2d');

@@ -1,16 +1,12 @@
 import zlib from 'node:zlib';
 
-/**
- * Минимальный декодер PNG — ровно то подмножество, которое отдаёт Chromium:
- * 8 бит на канал, цветовой тип 2 (RGB) или 6 (RGBA), без интерлейса.
- *
- * Зачем свой: анализировать кадр через canvas внутри страницы нельзя —
- * у WebGL-контекста без preserveDrawingBuffer буфер уже очищен, и любой
- * `drawImage` возвращает чёрный прямоугольник. Скриншот Playwright снимается
- * композитором и показывает то же, что видит игрок, но его надо разобрать здесь.
- */
+/** Minimal PNG decoder for Chromium screenshots: 8 bits per channel, color
+ * type 2 (RGB) or 6 (RGBA), without interlacing.
+ * Reading WebGL pixels inside the page without preserveDrawingBuffer returns
+ * a cleared black image. Playwright captures the compositor output seen by
+ * the player, so decode that screenshot here instead. */
 export function decodePng(buffer) {
-  if (buffer.readUInt32BE(0) !== 0x89504e47) throw new Error('не PNG');
+  if (buffer.readUInt32BE(0) !== 0x89504e47) throw new Error('not a PNG');
 
   let pos = 8;
   let width = 0, height = 0, depth = 0, colorType = 0, interlace = 0;
@@ -31,11 +27,11 @@ export function decodePng(buffer) {
     } else if (type === 'IEND') {
       break;
     }
-    pos += 12 + len; // длина + тип + данные + CRC
+    pos += 12 + len; // length + type + data + CRC
   }
 
   if (depth !== 8 || interlace !== 0 || (colorType !== 2 && colorType !== 6)) {
-    throw new Error(`неподдерживаемый PNG: depth=${depth} colorType=${colorType} interlace=${interlace}`);
+    throw new Error(`unsupported PNG: depth=${depth} colorType=${colorType} interlace=${interlace}`);
   }
 
   const channels = colorType === 6 ? 4 : 3;
@@ -43,7 +39,7 @@ export function decodePng(buffer) {
   const stride = width * channels;
   const out = Buffer.alloc(height * stride);
 
-  // Расфильтровка построчно (спецификация PNG, фильтры 0..4)
+  // Reconstruct scanlines using PNG filters 0 through 4.
   for (let y = 0; y < height; y++) {
     const filter = raw[y * (stride + 1)];
     const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
@@ -67,30 +63,25 @@ export function decodePng(buffer) {
           cur[x] = (v + pred) & 0xff;
           break;
         }
-        default: throw new Error(`неизвестный фильтр строки: ${filter}`);
+        default: throw new Error(`unknown scanline filter: ${filter}`);
       }
     }
   }
   return { width, height, channels, data: out };
 }
 
-/**
- * Доля изменившихся пикселей между двумя кадрами, 0..1.
- *
- * Побайтового сравнения буферов мало: один моргающий счётчик кадров в углу —
- * и «картинка изменилась», хотя игра застыла. Доля же позволяет требовать
- * заметного движения, а не любого.
- *
- * Разный размер — это не «немного изменилось», а другой кадр: 1.
- */
+/** Fraction of changed pixels between two frames, from 0 to 1.
+ * A byte comparison can mistake a blinking corner counter for a live game;
+ * a ratio lets us require meaningful movement. Different dimensions mean
+ * a different frame and return 1. */
 export function pixelDiffRatio(a, b, { threshold = 8 } = {}) {
   const A = decodePng(a);
   const B = decodePng(b);
   if (A.width !== B.width || A.height !== B.height) return 1;
 
   let changed = 0, n = 0;
-  // Та же прореженная сетка, что и во frameStats: полный проход по 4 млн
-  // пикселей ради «шевелится или нет» не нужен.
+  // Use the same sparse grid as frameStats. Checking all four million pixels
+  // is unnecessary for detecting movement.
   const stepX = Math.max(1, Math.floor(A.width / 240));
   const stepY = Math.max(1, Math.floor(A.height / 240));
   for (let y = 0; y < A.height; y += stepY) {
@@ -98,7 +89,7 @@ export function pixelDiffRatio(a, b, { threshold = 8 } = {}) {
       const ia = y * A.width * A.channels + x * A.channels;
       const ib = y * B.width * B.channels + x * B.channels;
       n++;
-      // Порог по каналу гасит шум сжатия и сглаживания, но не движение.
+      // A per-channel threshold ignores compression and antialiasing noise, not movement.
       if (Math.abs(A.data[ia] - B.data[ib]) > threshold
         || Math.abs(A.data[ia + 1] - B.data[ib + 1]) > threshold
         || Math.abs(A.data[ia + 2] - B.data[ib + 2]) > threshold) changed++;
@@ -107,10 +98,8 @@ export function pixelDiffRatio(a, b, { threshold = 8 } = {}) {
   return n ? changed / n : 0;
 }
 
-/**
- * Статистика кадра: «живой» он или пустой прямоугольник.
- * Считаем по прореженной сетке — точности хватает, а времени уходит меньше.
- */
+/** Frame statistics distinguish a drawn image from an empty rectangle.
+ * A sparse grid provides sufficient precision with less work. */
 export function frameStats(buffer, { grid = 96 } = {}) {
   const img = decodePng(buffer);
   const { width, height, channels, data } = img;
@@ -127,7 +116,7 @@ export function frameStats(buffer, { grid = 96 } = {}) {
       sum += lum; n++;
       if (lum < min) min = lum;
       if (lum > max) max = lum;
-      colors.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)); // 12-битное ведро
+      colors.add(((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)); // 12-bit bucket
     }
   }
   return {

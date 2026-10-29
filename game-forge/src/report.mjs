@@ -2,12 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, runDir, linkLatest, color } from './util.mjs';
 
-/**
- * Один HTML без внешних зависимостей: графики рисуем SVG-строками.
- * Смысл отчёта — чтобы человек за 30 секунд увидел то, на что агенту
- * потребовалось бы 300 строк описания.
- */
-/** Худший статус побеждает: зелёный отчёт при красном probe — ложь. */
+/** Single HTML file with inline SVG charts and no external dependencies.
+ * Help a reader see in 30 seconds what would take 300 lines to explain. */
+/** The worst status wins: a green report with a failed probe is misleading. */
 export function combineVerdict({ probe, analysis, scenarios }) {
   const rank = { fail: 3, 'needs-work': 3, warn: 2, watch: 2, pass: 1, ok: 1 };
   const parts = [probe?.verdict, analysis?.verdict, scenarios?.status].filter(Boolean);
@@ -27,13 +24,13 @@ export function report(cfg, { probe = null, analysis = null, shots = [], scenari
 
 function renderHtml(cfg, { probe, analysis, shots, scenarios, dir }) {
   const verdict = combineVerdict({ probe, analysis, scenarios });
-  const badge = { ok: ['#2ea043', 'В норме'], pass: ['#2ea043', 'В норме'], watch: ['#d29922', 'Под наблюдением'],
-    warn: ['#d29922', 'Под наблюдением'], 'needs-work': ['#f85149', 'Требует правок'], fail: ['#f85149', 'Требует правок'] }[verdict] || ['#8b949e', verdict];
+  const badge = { ok: ['#2ea043', 'OK'], pass: ['#2ea043', 'OK'], watch: ['#d29922', 'Watch'],
+    warn: ['#d29922', 'Watch'], 'needs-work': ['#f85149', 'Needs work'], fail: ['#f85149', 'Needs work'] }[verdict] || ['#8b949e', verdict];
 
   return `<!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(cfg.name)} — отчёт game-forge</title>
+<title>${esc(cfg.name)} — game-forge report</title>
 <style>
   :root { color-scheme: dark light; --bg:#0d1117; --fg:#e6edf3; --dim:#8b949e; --card:#161b22; --line:#30363d; --acc:#58a6ff; }
   @media (prefers-color-scheme: light) { :root { --bg:#fff; --fg:#1f2328; --dim:#656d76; --card:#f6f8fa; --line:#d0d7de; --acc:#0969da; } }
@@ -59,7 +56,7 @@ function renderHtml(cfg, { probe, analysis, shots, scenarios, dir }) {
   code { background:var(--card); padding:1px 5px; border-radius:4px; font-size:12px; }
 </style></head><body><div class="wrap">
 <h1>${esc(cfg.name)} <span class="badge" style="background:${badge[0]}">${badge[1]}</span></h1>
-<div class="sub">game-forge · ${new Date().toLocaleString('ru-RU')}</div>
+<div class="sub">game-forge · ${new Date().toLocaleString('en-US')}</div>
 
 ${probe ? probeSection(probe) : ''}
 ${scenarios ? scenariosSection(scenarios) : ''}
@@ -73,30 +70,29 @@ ${shots.length ? shotsSection(shots, dir) : ''}
 
 function probeSection(p) {
   const cls = (s) => (s === 'pass' ? 'ok' : s === 'warn' ? 'warn' : 'bad');
-  // Кадровые карточки печатаем, только если кадры мерили: иначе отчёт
-  // показывал бы «0 мс, запас ×0, 0 draw calls» для прогона, в котором не
-  // было ни одного кадра, — те же выдуманные нули, что и в проверках.
+  // Show frame cards only when frame work was measured. Otherwise an empty run
+  // would display invented zeros for frame time, headroom and draw calls.
   const measured = p.checks?.some((c) => c.name === 'frame-work');
   const frameCards = !measured ? '' : `
-  <div class="card"><div class="k">Работа в кадре</div><div class="v">${p.frameWorkMs ?? '—'} мс <span style="font-size:14px;color:var(--dim)">запас ×${p.headroom ?? '—'}</span></div></div>
-  <div class="card"><div class="k">p99 / максимум</div><div class="v">${p.frameWorkP99Ms ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.frameWorkMaxMs ?? '—'} мс</span></div></div>
-  <div class="card"><div class="k">Занято внутри rAF</div><div class="v">${p.mainThreadBusy != null ? Math.round(p.mainThreadBusy * 100) + '%' : '—'}</div></div>
-  <div class="card"><div class="k">Draw calls (p99 / макс)</div><div class="v">${p.drawCallsP99 ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.drawCallsMax ?? '—'}</span></div></div>`;
-  return `<h2>Техника</h2>
+  <div class="card"><div class="k">Frame work</div><div class="v">${p.frameWorkMs ?? '—'} ms <span style="font-size:14px;color:var(--dim)">headroom ×${p.headroom ?? '—'}</span></div></div>
+  <div class="card"><div class="k">p99 / maximum</div><div class="v">${p.frameWorkP99Ms ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.frameWorkMaxMs ?? '—'} ms</span></div></div>
+  <div class="card"><div class="k">Busy inside rAF</div><div class="v">${p.mainThreadBusy != null ? Math.round(p.mainThreadBusy * 100) + '%' : '—'}</div></div>
+  <div class="card"><div class="k">Draw calls (p99 / max)</div><div class="v">${p.drawCallsP99 ?? '—'} <span style="font-size:14px;color:var(--dim)">/ ${p.drawCallsMax ?? '—'}</span></div></div>`;
+  return `<h2>Technical checks</h2>
 <div class="grid">${frameCards}
-  <div class="card"><div class="k">Ошибок в консоли</div><div class="v ${p.errorCount ? 'bad' : 'ok'}">${p.errorCount}</div></div>
-  <div class="card"><div class="k">Вес загруженного</div><div class="v">${p.bundleKb} КБ</div></div>
-  <div class="card"><div class="k">Загрузка</div><div class="v">${p.loadMs} мс</div></div>
+  <div class="card"><div class="k">Console errors</div><div class="v ${p.errorCount ? 'bad' : 'ok'}">${p.errorCount}</div></div>
+  <div class="card"><div class="k">Downloaded size</div><div class="v">${p.bundleKb} KB</div></div>
+  <div class="card"><div class="k">Load time</div><div class="v">${p.loadMs} ms</div></div>
 </div>
 <table><tbody>
 ${p.checks.map((c) => `<tr><td class="${cls(c.status)}">${c.status.toUpperCase()}</td><td><b>${esc(c.name)}</b></td><td>${esc(c.detail)}</td></tr>`).join('')}
 </tbody></table>
-${p.errorCount ? `<details><summary>Ошибки (${p.errorCount})</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(p.errors.slice(0, 30).map((e) => `${e.kind}: ${e.text}`).join('\n'))}</pre></details>` : ''}`;
+${p.errorCount ? `<details><summary>Errors (${p.errorCount})</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(p.errors.slice(0, 30).map((e) => `${e.kind}: ${e.text}`).join('\n'))}</pre></details>` : ''}`;
 }
 
 function scenariosSection(sc) {
   const cls = (s) => (s === 'pass' ? 'ok' : s === 'warn' ? 'warn' : 'bad');
-  return `<h2>Сценарии</h2><table><thead><tr><th>Статус</th><th>Сценарий</th><th>Что не так</th></tr></thead><tbody>
+  return `<h2>Scenarios</h2><table><thead><tr><th>Status</th><th>Scenario</th><th>Issues</th></tr></thead><tbody>
 ${sc.scenarios.map((r) => `<tr><td class="${cls(r.status)}">${r.status.toUpperCase()}</td><td><b>${esc(r.scenario)}</b> <span style="color:var(--dim)">${esc(r.viewport)}</span></td>
   <td>${esc([...r.checks.filter((c) => c.status !== 'pass').map((c) => `${c.name}: ${c.detail}`),
              ...r.errors.slice(0, 2).map((e) => `${e.kind}: ${e.text}`)].join(' · ') || '—')}</td></tr>`).join('')}
@@ -104,49 +100,49 @@ ${sc.scenarios.map((r) => `<tr><td class="${cls(r.status)}">${r.status.toUpperCa
 }
 
 function botsSection(a) {
-  return `<h2>Боты</h2>
-<table><thead><tr><th>Профиль</th><th>Прогонов</th><th>Winrate</th><th>Медиана времени</th><th>p10–p90</th><th>Медиана очков</th><th>Медиана уровня</th></tr></thead><tbody>
+  return `<h2>Bots</h2>
+<table><thead><tr><th>Profile</th><th>Runs</th><th>Winrate</th><th>Median time</th><th>p10–p90</th><th>Median score</th><th>Median level</th></tr></thead><tbody>
 ${a.bots.map((b) => `<tr><td><b>${esc(b.bot)}</b></td><td>${b.runs}</td>
   <td>${(b.winrate * 100).toFixed(0)}% <span style="color:var(--dim)">±${(((b.winrateHi - b.winrateLo) / 2) * 100).toFixed(0)}</span></td>
-  <td>${b.medianSeconds}с</td><td>${b.p10Seconds}–${b.p90Seconds}с</td><td>${b.medianScore}</td><td>${b.medianLevel}</td></tr>`).join('')}
+  <td>${b.medianSeconds}s</td><td>${b.p10Seconds}–${b.p90Seconds}s</td><td>${b.medianScore}</td><td>${b.medianLevel}</td></tr>`).join('')}
 </tbody></table>`;
 }
 
 function difficultySection(a) {
   const L = a.levels.filter((x) => x.clearRate !== null);
   if (!L.length) return '';
-  return `<h2>Кривая сложности</h2>
+  return `<h2>Difficulty curve</h2>
 ${lineChart(L.map((x) => ({ x: x.level, y: x.clearRate, lo: x.clearRateLo, hi: x.clearRateHi })), {
-    yLabel: 'проходимость', xLabel: 'уровень', bands: [{ from: 0, to: 0.25, color: '#f8514922', label: 'стена' }, { from: 0.95, to: 1, color: '#d2992222', label: 'скучно' }],
+    yLabel: 'clear rate', xLabel: 'level', bands: [{ from: 0, to: 0.25, color: '#f8514922', label: 'wall' }, { from: 0.95, to: 1, color: '#d2992222', label: 'boring' }],
   })}
-<h2>Тепловая карта уровней</h2>
+<h2>Level heatmap</h2>
 ${heatmap(L)}
-<table><thead><tr><th>Ур.</th><th>Попыток</th><th>Проходимость</th><th>Медиана</th><th>Главная причина конца</th></tr></thead><tbody>
-${L.map((x) => `<tr><td>${x.level}</td><td>${x.attempts}</td><td>${(x.clearRate * 100).toFixed(0)}%</td><td>${x.medianSeconds ?? '—'}с</td><td>${x.topCauses[0] ? esc(x.topCauses[0][0]) + ' ×' + x.topCauses[0][1] : '—'}</td></tr>`).join('')}
+<table><thead><tr><th>Level</th><th>Attempts</th><th>Clear rate</th><th>Median</th><th>Main failure cause</th></tr></thead><tbody>
+${L.map((x) => `<tr><td>${x.level}</td><td>${x.attempts}</td><td>${(x.clearRate * 100).toFixed(0)}%</td><td>${x.medianSeconds ?? '—'}s</td><td>${x.topCauses[0] ? esc(x.topCauses[0][0]) + ' ×' + x.topCauses[0][1] : '—'}</td></tr>`).join('')}
 </tbody></table>`;
 }
 
 function progressSection(a) {
   const keys = Object.keys(a.progress[0]).filter((k) => k !== 't' && k !== 'seconds');
-  return `<h2>Кривые прогресса</h2>` + keys.map((k) => `<div style="margin-bottom:18px"><b>${esc(k)}</b>${
-    lineChart(a.progress.map((r) => ({ x: r.seconds, y: r[k].med, lo: r[k].p10, hi: r[k].p90 })), { xLabel: 'секунды', yLabel: k, autoY: true })
+  return `<h2>Progress curves</h2>` + keys.map((k) => `<div style="margin-bottom:18px"><b>${esc(k)}</b>${
+    lineChart(a.progress.map((r) => ({ x: r.seconds, y: r[k].med, lo: r[k].p10, hi: r[k].p90 })), { xLabel: 'seconds', yLabel: k, autoY: true })
   }</div>`).join('');
 }
 
 function flagsSection(a) {
-  return `<h2>Флаги баланса</h2>` + a.flags.map((f) => `<div class="flag ${f.severity}">
-    <b>[${esc(f.kind)}]</b>${f.level ? ` уровень ${f.level}` : ''} — ${esc(f.detail)}
+  return `<h2>Balance flags</h2>` + a.flags.map((f) => `<div class="flag ${f.severity}">
+    <b>[${esc(f.kind)}]</b>${f.level ? ` level ${f.level}` : ''} — ${esc(f.detail)}
     ${f.hint ? `<div style="color:var(--dim);font-size:12px">${esc(f.hint)}</div>` : ''}</div>`).join('');
 }
 
 function shotsSection(shots, dir) {
-  return `<h2>Кадры</h2><div class="shots">` + shots.map((s) => {
+  return `<h2>Screenshots</h2><div class="shots">` + shots.map((s) => {
     const rel = path.relative(dir, s.file);
     return `<div class="shot"><img src="${esc(rel)}" alt="${esc(s.label)}"><div class="cap"><b>${esc(s.label)}</b>${s.note ? ' — ' + esc(s.note) : ''}</div></div>`;
   }).join('') + `</div>`;
 }
 
-// --- примитивы графиков ---
+// --- chart primitives ---
 
 function lineChart(pts, { yLabel = '', xLabel = '', bands = [], autoY = false, w = 900, h = 240 } = {}) {
   if (!pts.length) return '';
@@ -173,7 +169,7 @@ function lineChart(pts, { yLabel = '', xLabel = '', bands = [], autoY = false, w
     `<text x="${pad.l - 6}" y="${Y(v) + 4}" fill="var(--dim)" font-size="10" text-anchor="end">${autoY ? fmt(v) : Math.round(v * 100) + '%'}</text>`).join('');
   const xTicks = tickValues(xMin, xMax, 8).map((v) => `<text x="${X(v)}" y="${h - 10}" fill="var(--dim)" font-size="10" text-anchor="middle">${fmt(v)}</text>`).join('');
 
-  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(yLabel)} по ${esc(xLabel)}">
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(yLabel)} by ${esc(xLabel)}">
     ${bandRects}${grid}${area}${line}${dots}${xTicks}
     <text x="${w / 2}" y="${h - 0}" fill="var(--dim)" font-size="10" text-anchor="middle">${esc(xLabel)}</text>
   </svg>`;
@@ -185,13 +181,13 @@ function heatmap(levels, { cell = 46, w = 900 } = {}) {
   const h = rows * cell + 10;
   const cells = levels.map((L, i) => {
     const cx = (i % perRow) * cell + 4, cy = Math.floor(i / perRow) * cell + 4;
-    // зелёный = проходят, красный = стена
+    // Green means high clear rate; red means a wall.
     const p = L.clearRate;
     const col = `hsl(${Math.round(p * 120)} 60% ${p > 0.9 ? 32 : 42}%)`;
     return `<g><rect x="${cx}" y="${cy}" width="${cell - 6}" height="${cell - 6}" rx="5" fill="${col}"/>
       <text x="${cx + (cell - 6) / 2}" y="${cy + 17}" font-size="11" fill="#fff" text-anchor="middle" font-weight="600">${L.level}</text>
       <text x="${cx + (cell - 6) / 2}" y="${cy + 31}" font-size="10" fill="#ffffffcc" text-anchor="middle">${Math.round(p * 100)}%</text>
-      <title>уровень ${L.level}: ${L.clears}/${L.attempts} прохождений${L.medianSeconds ? `, медиана ${L.medianSeconds}с` : ''}</title></g>`;
+      <title>level ${L.level}: ${L.clears}/${L.attempts} clears${L.medianSeconds ? `, median ${L.medianSeconds}s` : ''}</title></g>`;
   }).join('');
   return `<svg viewBox="0 0 ${w} ${h}">${cells}</svg>`;
 }
@@ -206,5 +202,5 @@ const fmt = (v) => (Math.abs(v) >= 1000 ? Math.round(v / 100) / 10 + 'k' : Math.
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 export function printReport(file) {
-  console.log(color.b('\nОтчёт: ') + file);
+  console.log(color.b('\nReport: ') + file);
 }

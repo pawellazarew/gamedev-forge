@@ -10,15 +10,15 @@ let root, sibling, srv;
 before(async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-server-'));
   root = path.join(base, 'game');
-  // Сосед с тем же префиксом имени — ровно тот случай, который пропускала
-  // проверка через startsWith
+  // A sibling sharing the same name prefix reproduces the case missed by the
+  // check using startsWith
   sibling = path.join(base, 'game-secret');
   fs.mkdirSync(root); fs.mkdirSync(sibling);
   fs.mkdirSync(path.join(root, 'sub'));
   fs.writeFileSync(path.join(root, 'index.html'), '<h1>ok</h1>');
   fs.writeFileSync(path.join(root, 'sub', 'index.html'), '<h1>sub</h1>');
   fs.writeFileSync(path.join(root, 'main.js'), 'console.log(1)');
-  fs.writeFileSync(path.join(sibling, 'secret.txt'), 'НЕ ДОЛЖНО УТЕЧЬ');
+  fs.writeFileSync(path.join(sibling, 'secret.txt'), 'MUST NOT LEAK');
   srv = await serve(root);
 });
 
@@ -26,65 +26,65 @@ after(async () => { await srv.close(); });
 
 const get = (p) => fetch(srv.url + p);
 
-describe('раздача файлов', () => {
-  test('корень отдаёт index.html', async () => {
+describe('file serving', () => {
+  test('root serves index.html', async () => {
     const r = await get('/');
     assert.equal(r.status, 200);
     assert.match(await r.text(), /<h1>ok<\/h1>/);
   });
 
-  test('подкаталог тоже отдаёт свой index.html', async () => {
+  test('subdirectories also serve their own index.html', async () => {
     assert.equal((await get('/sub')).status, 200);
     assert.equal((await get('/sub/')).status, 200);
   });
 
-  test('MIME проставляется по расширению', async () => {
+  test('MIME is set by extension', async () => {
     const r = await get('/main.js');
     assert.match(r.headers.get('content-type'), /javascript/);
   });
 
-  test('несуществующий файл — 404, а не падение', async () => {
+  test('missing file returns 404 rather than crashing', async () => {
     assert.equal((await get('/nope.png')).status, 404);
   });
 
-  test('счётчик отданных байт растёт', async () => {
+  test('served-byte counter increases', async () => {
     const before = srv.bytes();
     await get('/main.js');
     assert.ok(srv.bytes() > before);
   });
 });
 
-describe('безопасность', () => {
-  test('выход за корень через ../ запрещён', async () => {
+describe('security', () => {
+  test('traversal outside the root using ../ is blocked', async () => {
     for (const p of ['/../game-secret/secret.txt', '/sub/../../game-secret/secret.txt', '/%2e%2e/game-secret/secret.txt']) {
       const r = await get(p);
       assert.ok(r.status === 403 || r.status === 404, `${p} → ${r.status}`);
-      assert.doesNotMatch(await r.text(), /НЕ ДОЛЖНО УТЕЧЬ/);
+      assert.doesNotMatch(await r.text(), /MUST NOT LEAK/);
     }
   });
 
-  test('соседний каталог с общим префиксом недоступен', async () => {
-    // startsWith(abs) пропускал «/tmp/x/game-secret», потому что строка
-    // действительно начинается с «/tmp/x/game»
+  test('sibling with a shared name prefix is inaccessible', async () => {
+    // startsWith(abs) allowed /tmp/x/game-secret because the string
+    // really starts with /tmp/x/game
     const r = await get('/../game-secret/secret.txt');
-    assert.doesNotMatch(await r.text(), /НЕ ДОЛЖНО УТЕЧЬ/);
+    assert.doesNotMatch(await r.text(), /MUST NOT LEAK/);
   });
 
-  test('симлинк наружу не отдаёт чужой файл', async () => {
-    // Текстовая проверка пути такую ссылку пропускает: строка выглядит
-    // легально, а ведёт наружу
+  test('outward symlink does not expose external files', async () => {
+    // A text-only path check allows this symlink: the path looks
+    // valid but resolves outside the root
     const link = path.join(root, 'leak.txt');
     fs.symlinkSync(path.join(sibling, 'secret.txt'), link);
     try {
       const r = await get('/leak.txt');
-      assert.equal(r.status, 403, `симлинк наружу отдал ${r.status}`);
-      assert.doesNotMatch(await r.text(), /НЕ ДОЛЖНО УТЕЧЬ/);
+      assert.equal(r.status, 403, `outward symlink returned ${r.status}`);
+      assert.doesNotMatch(await r.text(), /MUST NOT LEAK/);
     } finally {
       fs.unlinkSync(link);
     }
   });
 
-  test('симлинк на системный файл тоже закрыт', async () => {
+  test('symlink to a system file is also blocked', async () => {
     const link = path.join(root, 'hosts');
     fs.symlinkSync('/etc/hosts', link);
     try {
@@ -95,9 +95,9 @@ describe('безопасность', () => {
     }
   });
 
-  test('симлинк ВНУТРИ корня остаётся рабочим', async () => {
-    // Запрещаем выход наружу, а не симлинки как таковые: сборки часто
-    // раскладывают ассеты ссылками внутри дерева
+  test('symlink INSIDE the root still works', async () => {
+    // Block escapes, not symlinks themselves: builds often
+    // arrange assets using links within the tree
     const link = path.join(root, 'alias.js');
     fs.symlinkSync(path.join(root, 'main.js'), link);
     try {
@@ -109,10 +109,10 @@ describe('безопасность', () => {
     }
   });
 
-  test('битый percent-encoding даёт 400 и не роняет сервер', async () => {
+  test('malformed percent-encoding returns 400 without crashing the server', async () => {
     const bad = await get('/%E0%A4%A');
     assert.equal(bad.status, 400);
-    // главное — сервер жив после этого
+    // the server must remain alive afterward
     assert.equal((await get('/index.html')).status, 200);
   });
 });

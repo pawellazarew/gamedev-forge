@@ -1,11 +1,11 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Blink Game (фикстура)</title>
+<title>Blink Game (fixture)</title>
 <!--
-  Рисует раз в 60 кадров. Доля перерисованных кадров низкая — игра живая, но
-  «почти не перерисовывается». Заодно ловит залипший флаг отрисовки: без
-  сброса флага одна отрисовка пометила бы нарисованными все следующие кадры,
-  и доля стала бы стопроцентной.
+  Draws once every 60 frames. The low redrawn-frame ratio means the game
+  is alive but rarely redraws. Also catches a sticky render flag: without
+  resetting it, a single drawing operation marks every subsequent frame
+  as redrawn, falsely raising the ratio to 100%.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>

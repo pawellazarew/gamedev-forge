@@ -1,8 +1,8 @@
 /**
- * Адаптер Brick Breaker для game-forge.
+ * Brick Breaker adapter for game-forge.
  *
- * Игра — один файл с глобальными переменными и фиксированным шагом (кадр = тик),
- * поэтому мост получается тонким: update() двигает логику, mouseX — это руль.
+ * The game is one file with global variables and a fixed step (frame = tick),
+ * so the bridge is thin: update() advances logic and mouseX steers the paddle.
  */
 export default {
   autostart: true,
@@ -15,24 +15,24 @@ export default {
     let prevLives = 3;
     let levelStartTick = 0;
     let tickNo = 0;
-    let targetLevel = 20;          // LEVELS.length: пройти все — победа
+    let targetLevel = 20;          // LEVELS.length: clearing all levels wins
     let mode = 0;
 
-    /** Куда придёт мяч на высоте ракетки, с учётом отскоков от стен. */
+    /** Predict the ball position at paddle height, including wall bounces. */
     function predictX(ball) {
       if (!ball || ball.dy <= 0) return null;
       const dist = PADDLE_Y - ball.y;
       if (dist <= 0) return null;
       const t = dist / ball.dy;
       let x = ball.x + ball.dx * t;
-      // отражения: складываем траекторию гармошкой по ширине поля
+      // Reflect the trajectory by folding it across the field width.
       const span = 2 * W;
       x = ((x % span) + span) % span;
       if (x > W) x = span - x;
       return { x, ticks: t };
     }
 
-    /** Мяч, который упадёт раньше всех, — за ним и едем. */
+    /** Follow the ball that will land first. */
     function threat() {
       const balls = window.balls || [];
       let best = null;
@@ -74,7 +74,7 @@ export default {
       tick(n = 1) {
         for (let i = 0; i < n; i++) {
           if (window.gameOver || window.gameWon) return;
-          // после потери жизни мяч «прилипает» — живой игрок сразу перезапускает
+          // The ball sticks after losing a life; a human player restarts immediately.
           if (!window.launched) window.launchBall();
           window.update();
           tickNo++;
@@ -87,8 +87,8 @@ export default {
             events.push({ t: tickNo, type: 'level_clear', level: prevLevel, ticks: tickNo - levelStartTick });
             prevLevel = window.level;
             levelStartTick = tickNo;
-            // За targetLevel игра уже выиграна: «начатый» 21-й уровень попал бы
-            // в статистику как стена с нулевой проходимостью.
+            // Past targetLevel the game is already won: a started level 21 would
+            // appear in statistics as a wall with zero completion rate.
             if (!(mode === 0 && window.level > targetLevel)) {
               events.push({ t: tickNo, type: 'level_start', level: window.level });
             }
@@ -130,7 +130,7 @@ export default {
 
       events() { return events.slice(); },
 
-      /** Руль — это mouseX в игровых координатах; игра сама доводит ракетку. */
+      /** Steering is mouseX in game coordinates; the game moves the paddle. */
       act(input) {
         if (input && typeof input.x === 'number') {
           window.mouseX = Math.max(0, Math.min(W, input.x));
@@ -139,8 +139,8 @@ export default {
 
       bots: {
         /**
-         * Новичок: смотрит на мяч раз в ~10 кадров, мажет, не понимает
-         * инверсии управления и не собирает бонусы.
+         * Beginner: checks the ball every ~10 frames, misses, does not understand
+         * reversed controls and does not collect power-ups.
          */
         casual(state, ctx) {
           const m = ctx.memory;
@@ -153,7 +153,7 @@ export default {
           return { x: m.target };
         },
 
-        /** Середняк: реагирует часто, ошибается умеренно, реверс замечает. */
+        /** Average player: reacts often, makes moderate errors, notices reversal. */
         normal(state, ctx) {
           const m = ctx.memory;
           if (ctx.tick % 4 !== 0 && m.target != null) return { x: m.target };
@@ -166,11 +166,11 @@ export default {
         },
 
         /**
-         * Ветеран: каждый кадр, почти без ошибки. Подкручивает угол краем
-         * ракетки только когда мяч далеко — ракетка догоняет цель
-         * экспоненциально (lerp 0.12), и «умная» правка на подлёте
-         * оборачивается промахом. Проверено симуляцией: с погоней за бонусами
-         * и смещением 0.22·ширины ветеран играл ХУЖЕ казуала.
+         * Veteran: reacts every frame with almost no error. Uses the paddle edge
+         * to adjust the angle only while the ball is far away: the paddle follows
+         * its target exponentially (lerp 0.12), so a clever late adjustment
+         * causes a miss. Simulation confirmed that chasing power-ups with an
+         * offset of 0.22 times the width made the veteran WORSE than casual.
          */
         veteran(state, ctx) {
           const t = threat();
@@ -179,15 +179,15 @@ export default {
           const pw = window.PADDLE_W ?? 80;
           const ball = t.ball;
 
-          // Мяч, летящий почти вертикально, запирается в пустой колонке и
-          // партия не кончается никогда (проверено: 150 000 кадров, 8 кирпичей,
-          // ноль прогресса). Живой игрок в этой ситуации бьёт краем — и бот тоже.
+          // A nearly vertical ball gets trapped in an empty column forever
+          // (verified: 150,000 frames, 8 bricks, zero progress). A human hits
+          // it with the paddle edge in this situation, and so does the bot.
           const vertical = ball && Math.abs(ball.dx) < 0.35 * (ball.speed || 1);
           if (vertical) {
             const bricks = window.bricks || [];
             let sum = 0, n = 0;
             for (const b of bricks) if (b.alive) { sum += b.x + b.w / 2; n++; }
-            const aim = n ? sum / n : W / 2;         // туда, где ещё есть кирпичи
+            const aim = n ? sum / n : W / 2;         // aim where bricks remain
             x += (aim < ball.x ? -1 : 1) * pw * 0.4;
           } else if (t.ticks > 90) {
             const bricks = window.bricks || [];

@@ -1,8 +1,8 @@
 <!doctype html><meta charset="utf-8"><title>Spike Frame</title>
 <canvas id="game" width="320" height="240"></canvas>
 <script>
-// Фикстура для gate по draw calls: почти все кадры дешёвые, но раз в секунду
-// случается пик. Среднее прячет его, пик — нет.
+// Draw-call gate fixture: most frames are cheap, with one spike every
+// second. An average hides the spike; a maximum does not.
 var gl = document.getElementById('game').getContext('webgl');
 var buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -23,7 +23,7 @@ var frame = 0;
 (function loop() {
   frame++;
   gl.clearColor(0.05, 0.07, 0.1, 1); gl.clear(gl.COLOR_BUFFER_BIT);
-  var n = (frame % 60 === 0) ? 600 : 6;   // пик раз в секунду
+  var n = (frame % 60 === 0) ? 600 : 6;   // spike once per second
   for (var i = 0; i < n; i++) gl.drawArrays(gl.TRIANGLES, 0, 3);
   requestAnimationFrame(loop);
 })();

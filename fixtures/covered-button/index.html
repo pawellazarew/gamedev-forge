@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,24 +8,24 @@
   html, body { margin: 0; height: 100%; background: #16202c; color: #e8eef5; font: 16px/1.4 system-ui, sans-serif; }
   #ui { position: relative; padding: 32px; display: flex; gap: 16px; align-items: center; }
   #go { position: relative; font: inherit; font-size: 20px; padding: 14px 28px; }
-  /* Шаг урока поднимает кнопку над артом — как tutRaise() в bum2billionaire */
+  /* Tutorial raises the button above artwork, like tutRaise() in bum2billionaire. */
   #go.raised { z-index: 31; }
-  /* Декоративный арт во весь экран поверх интерфейса: та самая поломка */
+  /* Full-screen decorative artwork over the interface: the original defect. */
   #art { position: fixed; inset: 0; z-index: 3; opacity: .35;
          background: radial-gradient(circle at 70% 60%, #f4b860 0, #b0413e 30%, transparent 60%); }
   #art .hero { position: absolute; inset: 0; }
-  /* Починка: арт не ловит клики, и они проходят к интерфейсу под ним */
+  /* Fix: artwork ignores input, letting clicks reach the interface beneath. */
   body.safe #art { pointer-events: none; }
 </style>
 </head>
 <body>
-<div id="ui"><button id="go" class="raised">Писать код</button><span id="count">0</span></div>
+<div id="ui"><button id="go" class="raised">Write code</button><span id="count">0</span></div>
 <div id="art"><div class="hero"></div></div>
 <script>
-  // Нарочно сломанная страница: по кнопке попадает только первый клик. Потом
-  // урок «переходит к следующему шагу», кнопка опускается под арт, и игрок
-  // жмёт в картинку. DOM-клик `go.click()` при этом продолжает работать —
-  // так и зеленел play у bum2billionaire.
+  // Deliberately broken page: only the first click reaches the button. Then
+  // the tutorial advances, lowering the button under the artwork, and the
+  // player clicks the image. DOM go.click() still works, which caused play
+  // to pass on the broken bum2billionaire interface.
   window.clicks = 0;
   window.lastPointer = null;
   const go = document.getElementById('go');

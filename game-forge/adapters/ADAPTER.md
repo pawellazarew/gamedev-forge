@@ -1,91 +1,92 @@
-# Контракт адаптера
+# Adapter contract
 
-Адаптер — это мост между конкретной игрой и конвейером. Без него доступны
-`probe` и `shots` (агент смотрит и меряет), с ним — `sim`, `analyze`, `report`
-(агент играет сотни раз и читает баланс).
+An adapter bridges a specific game and the pipeline. Without one, `probe` and
+`shots` let an agent inspect and measure the game. With one, `sim`, `analyze`
+and `report` let it play hundreds of times and analyze balance.
 
-Файл лежит в игре: `<game>/forge/adapter.mjs`, путь указан в `forge.config.mjs`.
+Place the file at `<game>/forge/adapter.mjs` and reference it in `forge.config.mjs`.
 
-## Форма файла
+## File shape
 
 ```js
 export default {
-  autostart: true,        // forge сам вызовет start() перед probe
-  tickRate: 60,           // сколько тиков в игровой секунде: кадр=60, idle-тик=1
-  preload({ seed }) {},   // опционально: выполняется ДО загрузки игры
-  install() {},           // обязательно: выполняется ПОСЛЕ загрузки, ставит window.__FORGE__
+  autostart: true,        // forge calls start() before probe
+  tickRate: 60,           // ticks per game second: frames=60, idle ticks=1
+  preload({ seed }) {},   // optional: runs BEFORE the game loads
+  install() {},           // required: runs AFTER loading and sets window.__FORGE__
 }
 ```
 
-`tickRate` влияет только на отчётность: без него 14 400 тиков idle-игры
-напечатаются как «240 секунд» вместо четырёх часов.
+`tickRate` affects reporting only. Without it, 14,400 ticks of an idle game are
+reported as “240 seconds” rather than four hours.
 
-`install()` сериализуется и выполняется в браузере. Замыкания не переживают
-переезд — всё, что нужно, объявляй **внутри** функции.
+`install()` is serialized and executed in the browser. Its closure does not
+survive the transfer: declare everything it needs **inside** the function.
 
 ## window.__FORGE__
 
-| Метод | Обязателен | Назначение |
+| Method | Required | Purpose |
 |---|---|---|
-| `start(opts)` | да | начать прогон с нуля; `opts = {seed, mode, level, ...}` |
-| `tick(n)` | да | прогнать `n` логических кадров **без рендера** |
-| `state()` | да | `{over, win, score, level, lives, ...}` |
-| `act(input)` | для sim | применить решение бота |
-| `bots` | для sim | `{ имя: (state, ctx) => input }` |
-| `render()` | для shots | отрисовать текущий кадр |
-| `sample()` | нет | что писать в кривые прогресса (по умолчанию `state()`) |
-| `events()` | нет | события прогона (см. ниже) |
+| `start(opts)` | yes | start a fresh run; `opts = {seed, mode, level, ...}` |
+| `tick(n)` | yes | advance `n` logic frames **without rendering** |
+| `state()` | yes | `{over, win, score, level, lives, ...}` |
+| `act(input)` | for sim | apply a bot decision |
+| `bots` | for sim | `{ name: (state, ctx) => input }` |
+| `render()` | for shots | render the current frame |
+| `sample()` | no | values for progress curves (defaults to `state()`) |
+| `events()` | no | run events (see below) |
 
-`ctx` политики: `{seed, tick, memory, lastAction, lastOk, ...params}`.
-`memory` — пустой объект, живущий весь прогон: там политика держит своё
-состояние (цель, кулдауны). `lastOk` — сработало ли предыдущее действие
-(`act()` должен возвращать `false` при отказе), чтобы политика не долбилась
-вечно в постройку, на которую не хватает ресурсов.
+Policy context: `{seed, tick, memory, lastAction, lastOk, ...params}`.
+`memory` begins as an empty object and persists for the entire run, holding
+policy state such as targets or cooldowns. `lastOk` says whether the previous
+action succeeded (`act()` must return `false` on rejection), so a policy avoids
+repeatedly trying a construction action it cannot afford.
 
-## События
+## Events
 
-Свободная форма, но эти типы аналитика понимает из коробки:
+Events are flexible, but analytics recognizes these types out of the box:
 
 ```js
-{ t, type: 'level_start', level }          // вход на уровень = попытка
-{ t, type: 'level_clear', level, ticks }   // ticks — сколько заняло прохождение
-{ t, type: 'level_fail',  level, cause }   // уровень провален — вторая половина знаменателя
-{ t, type: 'death',       level, cause }   // потеря жизни; в знаменатель НЕ идёт
+{ t, type: 'level_start', level }          // entering a level counts as an attempt
+{ t, type: 'level_clear', level, ticks }   // ticks spent completing it
+{ t, type: 'level_fail',  level, cause }   // failed level: the other denominator component
+{ t, type: 'death',       level, cause }   // life lost; excluded from the denominator
 { t, type: 'damage',      level, source, value }
 { t, type: 'reward',      level, kind, value }
 ```
 
-Разница между `death` и `level_fail` принципиальна: в аркаде игрок теряет три
-жизни за уровень и всё равно его проходит. Если считать смерти попытками,
-проходимость занижается на ровном месте.
+The distinction between `death` and `level_fail` matters: an arcade player can
+lose three lives on one level and still complete it. Counting deaths as attempts
+understates completion rates.
 
-Без `level_start`/`level_clear`/`death` не будет кривой сложности и тепловой
-карты — только winrate по ботам.
+Without `level_start`/`level_clear`/`death`, only per-bot win rates are available,
+not the difficulty curve or heatmap.
 
-## Требования к игре
+## Game requirements
 
-1. **Фиксированный шаг.** `tick()` должен продвигать логику на один кадр
-   независимо от реального времени. Если игра завязана на `delta` из rAF —
-   вынеси шаг в функцию `update(dt)` и вызывай её с константой.
-2. **Никакого рендера в tick().** Рендер съедает ~90% времени; без него
-   1000 прогонов идут секунды, а не часы.
-3. **Детерминизм.** `Math.random` уже подменён seeded-генератором. Если игра
-   использует свой RNG — дай ему seed в `start()`, иначе два прогона с одним
-   seed разойдутся и «фикс» нельзя будет проверить.
-4. **Никаких таймеров реального времени** в игровой логике (`setTimeout`,
-   `Date.now()`): в симуляции они не двигаются вместе с тиками.
+1. **Fixed step.** `tick()` advances logic by one frame regardless of wall-clock
+   time. If the game depends on rAF `delta`, extract `update(dt)` and call it
+   with a constant.
+2. **No rendering inside tick().** Rendering consumes about 90% of the time;
+   disabling it lets 1,000 runs finish in seconds rather than hours.
+3. **Determinism.** `Math.random` is already replaced by a seeded generator.
+   Seed any custom RNG in `start()` too, so runs with the same seed agree and
+   fixes can be verified.
+4. **No wall-clock timers** in game logic (`setTimeout`, `Date.now()`): in
+   simulation they do not advance along with ticks.
 
-## Минимум ботов
+## Minimum bot set
 
-Держи хотя бы два профиля:
+Keep at least two profiles:
 
-- `casual` — редкая реакция (раз в 8–12 кадров), заметная ошибка прицела;
-- `veteran` — реакция каждый кадр, малая ошибка, использует продвинутые приёмы.
+- `casual`: infrequent reactions (every 8–12 frames), noticeable aiming error.
+- `veteran`: reacts every frame, small errors, uses advanced techniques.
 
-Разрыв между ними — это и есть ответ на вопрос «влияет ли навык на исход».
-Если разрыва нет, аналитика поднимет флаг `skill-flat`.
+The gap answers whether skill affects the outcome. Without a gap, analytics
+raises `skill-flat`.
 
-## Чего адаптер не делает
+## Adapter limitations
 
-Не оценивает, весело ли. Он даёт цифры: где стена, где скука, где скачок.
-Решение «поднять урон» или «убрать волну» остаётся за человеком.
+The adapter does not evaluate enjoyment. It supplies numbers for walls, low
+resistance and spikes. Decisions such as increasing damage or removing a wave
+remain with a person.

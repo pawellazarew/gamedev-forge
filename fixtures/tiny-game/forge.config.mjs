@@ -1,5 +1,5 @@
 export default {
-  name: 'Tiny Game (фикстура)',
+  name: 'Tiny Game (fixture)',
   root: '.',
   entry: 'index.html',
   viewport: 'desktop',

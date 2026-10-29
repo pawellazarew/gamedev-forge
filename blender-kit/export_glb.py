@@ -1,13 +1,13 @@
 """
-Детерминированный экспорт героя «Эха Океана»: .blend → .glb.
+Deterministic Ocean Echo hero export: .blend to .glb.
 
     ./blend.sh export_glb.py --blend assets/heroes/boat/boat.blend -- \
         --out assets/heroes/boat/boat.raw.glb --budget 1000 [--select hero_]
 
-Делает: применяет трансформы и модификаторы, flat shading, origin в центр
-основания, проверяет один материал и вершинные цвета, объединяет по материалу,
-экспортирует GLB (+Y up, COLOR_0 из активного Color Attribute, _-атрибуты).
-Падает с ненулевым кодом при нарушении конвенций (§2 echo-blender-prop).
+Applies transforms and modifiers, uses flat shading, centers the origin at the
+base, checks for one material and vertex colors, joins by material and exports
+GLB (+Y up, COLOR_0 from the active Color Attribute, underscore-prefixed attributes).
+Exits nonzero when conventions are violated (section 2 of echo-blender-prop).
 """
 import sys
 import bpy
@@ -40,7 +40,7 @@ def fail(msg):
 def mesh_objects(prefix):
     objs = [o for o in bpy.data.objects if o.type == 'MESH' and o.name.startswith(prefix)]
     if not objs:
-        fail(f'нет MESH-объектов с префиксом {prefix!r}')
+        fail(f'no MESH objects with prefix {prefix!r}')
     return objs
 
 
@@ -62,7 +62,7 @@ def ensure_vertex_colors(objs):
     for o in objs:
         attrs = o.data.color_attributes
         if COLOR_ATTR not in attrs:
-            fail(f'{o.name}: нет Color Attribute {COLOR_ATTR!r} (CORNER/BYTE_COLOR)')
+            fail(f'{o.name}: missing Color Attribute {COLOR_ATTR!r} (CORNER/BYTE_COLOR)')
         attrs.active_color = attrs[COLOR_ATTR]
         attrs.render_color_index = attrs.find(COLOR_ATTR)
 
@@ -113,20 +113,20 @@ def main():
     hero.data.calc_loop_triangles()
     tris = len(hero.data.loop_triangles)
     if tris > a['budget']:
-        fail(f'{tris} tris > бюджет {a["budget"]}')
+        fail(f'{tris} tris > budget {a["budget"]}')
     if len(hero.data.materials) != 1:
-        fail(f'{len(hero.data.materials)} материалов, нужен один')
+        fail(f'{len(hero.data.materials)} materials; exactly one required')
     bpy.ops.object.select_all(action='DESELECT')
     hero.select_set(True)
     bpy.ops.export_scene.gltf(
         filepath=a['out'],
         export_format='GLB',
         use_selection=True,
-        export_apply=True,           # применить оставшиеся модификаторы
-        export_yup=True,             # +Y вверх для three.js
-        export_vertex_color='ACTIVE',  # COLOR_0 из активного Color Attribute (Blender >= 4.2)
+        export_apply=True,           # apply remaining modifiers
+        export_yup=True,             # +Y up for three.js
+        export_vertex_color='ACTIVE',  # COLOR_0 from the active Color Attribute (Blender >= 4.2)
         export_all_vertex_colors=False,
-        export_attributes=True,      # кастомные атрибуты с префиксом '_'
+        export_attributes=True,      # custom attributes prefixed with '_'
         export_normals=True,
         export_texcoords=False,
         export_materials='EXPORT',

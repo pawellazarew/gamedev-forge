@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Обёртка над headless-Blender: ./blend.sh <script.py> [--blend файл.blend] -- <аргументы скрипта>
+# Headless Blender wrapper: ./blend.sh <script.py> [--blend file.blend] -- <script arguments>
 #
-# Headless-режим детерминирован и повторяем — именно им собираются ассеты,
-# тогда как BlenderMCP нужен для интерактивной лепки.
+# Headless mode makes asset builds repeatable;
+# BlenderMCP is used for interactive modeling.
 set -euo pipefail
 
 if [ -n "${BLENDER_APP:-}" ]; then
@@ -15,7 +15,7 @@ fi
 [ -x "$BLENDER" ] || { echo "Blender not found. Set BLENDER_APP to its executable." >&2; exit 1; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-SCRIPT="${1:?укажи скрипт: ./blend.sh render_preview.py -- --help}"
+SCRIPT="${1:?provide a script: ./blend.sh render_preview.py -- --help}"
 shift
 
 BLEND_FILE=""

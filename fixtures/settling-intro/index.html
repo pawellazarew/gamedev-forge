@@ -1,10 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Settling Intro (фикстура)</title>
+<title>Settling Intro (fixture)</title>
 <!--
-  Титульный экран: полторы секунды проявляется, потом замирает и ждёт ввода.
-  Цикл жив, отрисовка честно прекращается — так выглядит любой экран паузы,
-  победы или меню. Гейт по хвосту окна принимал это за смерть рендера.
+  Title screen fades in for 1.5 seconds, then settles and waits for input.
+  The loop stays alive but rendering legitimately stops, as on a pause,
+  win or menu screen. The window-tail gate mistook this for dead rendering.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>
@@ -18,9 +18,9 @@
       ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);
       ctx.globalAlpha = k;
       ctx.fillStyle = '#58a6ff'; ctx.fillRect(220, 150, 200, 100);
-      ctx.fillStyle = '#e6edf3'; ctx.font = '24px sans-serif'; ctx.fillText('НАЧАТЬ', 265, 210);
+      ctx.fillStyle = '#e6edf3'; ctx.font = '24px sans-serif'; ctx.fillText('START', 265, 210);
       ctx.globalAlpha = 1;
-      if (k >= 1) dirty = false;              // доиграли — и замерли
+      if (k >= 1) dirty = false;              // animation finished; stop drawing
     }
     requestAnimationFrame(loop);
   })();

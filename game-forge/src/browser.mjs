@@ -3,10 +3,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { chromium } from 'playwright-core';
 
-/**
- * Playwright-core не тянет браузеры за собой, а `npx playwright install` качает
- * их в общий кеш. Ищем то, что уже скачано, вместо отдельной копии на проект.
- */
+/** Playwright Core does not bundle browsers. The Playwright installer uses a
+ * shared cache; reuse downloaded browsers instead of keeping a project copy. */
 const CACHE_DIRS = [
   process.env.PLAYWRIGHT_BROWSERS_PATH,
   path.join(os.homedir(), 'Library/Caches/ms-playwright'),
@@ -14,25 +12,25 @@ const CACHE_DIRS = [
 ].filter(Boolean);
 
 const EXEC_PATTERNS = [
-  // полный Chromium — нужен для WebGL и честных скриншотов
+  // Full Chromium is needed for WebGL and representative screenshots.
   ['chromium-', 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
   ['chromium-', 'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'],
   ['chromium-', 'chrome-mac-arm64/Chromium.app/Contents/MacOS/Chromium'],
   ['chromium-', 'chrome-mac/Chromium.app/Contents/MacOS/Chromium'],
   ['chromium-', 'chrome-linux/chrome'],
   ['chromium-', 'chrome-linux64/chrome'],
-  // headless shell — быстрее, но без GPU-пути; годится для симуляций
+  // The lighter headless shell is faster but lacks the GPU path; useful for simulations.
   ['chromium_headless_shell-', 'chrome-headless-shell-mac-arm64/chrome-headless-shell'],
   ['chromium_headless_shell-', 'chrome-headless-shell-mac/chrome-headless-shell'],
   ['chromium_headless_shell-', 'chrome-headless-shell-linux64/chrome-headless-shell'],
 ];
 
-/** @param {{shell?: boolean}} opts shell:true — предпочесть лёгкий headless-shell */
+/** @param {{shell?: boolean}} opts shell:true prefers the lightweight headless shell. */
 export function findChromium({ shell = false } = {}) {
   const found = [];
   for (const cache of CACHE_DIRS) {
     if (!fs.existsSync(cache)) continue;
-    const entries = fs.readdirSync(cache).sort().reverse(); // свежий билд первым
+    const entries = fs.readdirSync(cache).sort().reverse(); // newest build first
     for (const entry of entries) {
       for (const [prefix, tail] of EXEC_PATTERNS) {
         if (!entry.startsWith(prefix)) continue;
@@ -50,19 +48,16 @@ export function chromiumOrDie(opts) {
   const exec = findChromium(opts);
   if (!exec) {
     throw new Error(
-      'Chromium не найден. Поставь браузеры Playwright:\n  npx playwright install chromium',
+      'Chromium not found. Install Playwright browsers:\n  npx playwright install chromium',
     );
   }
   return exec;
 }
 
-/**
- * @param {{headless?: boolean, shell?: boolean, swiftshader?: boolean, slowMo?: number}} opts
- *   swiftshader:true — софтверный WebGL. Нужен только там, где иначе будет
- *   чёрный кадр (headless + WebGL). Для 2D-canvas включать НЕЛЬЗЯ: замеряно
- *   на Brick Breaker — 7.6 fps против 93 fps без флага, то есть замер станет
- *   бессмысленным, а критик будет ругать «тормоза», которых нет.
- */
+/** @param {{headless?: boolean, shell?: boolean, swiftshader?: boolean, slowMo?: number}} opts
+ * swiftshader:true enables software WebGL only to avoid black headless WebGL frames.
+ * Keep it off for 2D canvas: Brick Breaker measured 7.6 fps versus 93 without it,
+ * which would make the measurement and performance critique misleading. */
 export async function launch(opts = {}) {
   const { headless = true, shell = false, swiftshader = false, slowMo = 0 } = opts;
   const args = [
@@ -76,7 +71,7 @@ export async function launch(opts = {}) {
   return chromium.launch({ executablePath: chromiumOrDie({ shell }), headless, args, slowMo });
 }
 
-/** Пресеты вьюпорта: как игру увидит игрок на конкретном классе устройств. */
+/** Viewport presets approximate how players see the game on each device class. */
 export const VIEWPORTS = {
   desktop: { width: 1280, height: 800, deviceScaleFactor: 2, isMobile: false, hasTouch: false },
   wide: { width: 1600, height: 900, deviceScaleFactor: 2, isMobile: false, hasTouch: false },
@@ -88,26 +83,19 @@ export const VIEWPORTS = {
 
 export function viewport(name = 'desktop') {
   const vp = VIEWPORTS[name];
-  if (!vp) throw new Error(`Неизвестный вьюпорт "${name}". Доступны: ${Object.keys(VIEWPORTS).join(', ')}`);
+  if (!vp) throw new Error(`Unknown viewport "${name}". Available: ${Object.keys(VIEWPORTS).join(', ')}`);
   return vp;
 }
 
-/**
- * Явный флаг важнее сценария, сценарий важнее конфига.
- * Сценарий объявляет вьюпорт не для красоты: «phone» — это и есть та сцена,
- * которую просили снять или замерить, а на 1280 пикселях игра раскладывается
- * иначе. Один порядок на probe и на shots/play, чтобы отчёт не смешивал
- * телефонные числа с десктопными кадрами.
- */
+/** Precedence: explicit flag, scenario, config. A phone scenario measured at
+ * 1280 pixels is a different layout. Keep probe and shots/play consistent
+ * so reports do not mix phone metrics with desktop screenshots. */
 export function resolveViewport(explicit, sc, cfg = {}) {
   return explicit || sc?.viewport || cfg.viewport || 'desktop';
 }
 
-/**
- * Страница с уже подключённым сбором ошибок: console error/warning, необработанные
- * реджекты, 4xx/5xx запросы. Игра, которая сыплет ошибками, часто выглядит нормально
- * на скриншоте — поэтому собираем всегда, а не по запросу.
- */
+/** Create a page with console warnings/errors, unhandled rejections and failed
+ * HTTP requests collected from the start. Screenshots can hide these failures. */
 export async function newPage(browser, vpName = 'desktop') {
   const vp = viewport(vpName);
   const context = await browser.newContext({
@@ -133,8 +121,8 @@ export async function newPage(browser, vpName = 'desktop') {
     if (res.status() >= 400) errors.push({ kind: 'http', text: `${res.status()} ${res.url()}` });
   });
   page.__forgeErrors = errors;
-  // Настоящий клик на телефоне — касание, а не мышь: игра, слушающая только
-  // touchstart или pointerType, мышиный клик может и не заметить.
+  // A real phone click is a touch. Games listening only to touchstart or
+  // pointerType may ignore mouse input.
   page.__forgeTouch = !!vp.hasTouch;
   return page;
 }

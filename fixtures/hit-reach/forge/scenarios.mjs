@@ -1,12 +1,12 @@
 /**
- * Достижимость: где проверка обязана докрутить и попасть, а где — назвать,
- * почему игрок не попадёт. Здоровые сценарии обязаны проходить на телефоне и
- * на десктопе: ложный красный здесь блокировал бы любую страницу со списком.
+ * Reachability: where the check must scroll and hit, and where it must
+ * explain why a player cannot hit. Healthy scenarios must pass on phones
+ * and desktops: a false failure here would block any page with a list.
  */
 const reachable = (vp) => ({
   name: `reach-${vp}`,
   viewport: vp,
-  note: 'Широкая страница, список с прокруткой, кнопка ниже экрана и кнопка, которая включится позже',
+  note: 'Wide page, scrollable list, below-screen button and a button enabled later',
   steps: [
     { realClick: '#pan' },
     { realClick: '#inlist' },
@@ -16,11 +16,11 @@ const reachable = (vp) => ({
     { realClick: '#full' },
     { realClick: '#abs' },
     { realClick: '#sb' },
-    { expect: { fn: () => ['pan', 'inlist', 'below', 'late', 'buy', 'full', 'abs', 'sb'].every((id) => window.clicks[id] === 1), msg: 'каждый клик дошёл до своей кнопки' } },
-    // Проверка без клика — после неё прокрутка возвращается как была
+    { expect: { fn: () => ['pan', 'inlist', 'below', 'late', 'buy', 'full', 'abs', 'sb'].every((id) => window.clicks[id] === 1), msg: 'each click reached its button' } },
+    // Check without clicking, then restore the original scroll position.
     { eval: 'window.scrollTo(0, 0); document.getElementById("shop").scrollTop = 0' },
     { hittable: ['#buy', '#below'], timeout: 0 },
-    { expect: { fn: () => window.scrollY === 0 && document.getElementById('shop').scrollTop === 0, msg: 'проверка не сдвинула прокрутку' } },
+    { expect: { fn: () => window.scrollY === 0 && document.getElementById('shop').scrollTop === 0, msg: 'check preserved scroll position' } },
   ],
 });
 
@@ -30,48 +30,48 @@ export default [
   {
     name: 'pulse',
     viewport: 'desktop',
-    note: 'Вечная анимация не должна тормозить клик: ожидание «элемент замер» тут бесконечно',
+    note: 'Continuous animation must not delay clicks: waiting for a stationary element would never end',
     steps: [
       { eval: 'window.t0 = performance.now()' },
       { realClick: '#pulse', times: 3 },
-      { expect: { fn: () => window.clicks.pulse === 3 && performance.now() - window.t0 < 1500, msg: 'три клика меньше чем за 1,5 с' } },
+      { expect: { fn: () => window.clicks.pulse === 3 && performance.now() - window.t0 < 1500, msg: 'three clicks in less than 1.5 seconds' } },
     ],
   },
   { name: 'locked', viewport: 'phone', steps: [{ hittable: '#inlocked' }] },
   {
     name: 'page-locked',
     viewport: 'desktop',
-    // Игра заперла прокрутку страницы, а кнопка уехала ниже экрана
+    // Game locks page scrolling while the button sits below the screen.
     steps: [{ eval: "document.body.style.overflow = 'hidden'; window.scrollTo(0, 0)" }, { hittable: '#below' }],
   },
   { name: 'dead', viewport: 'desktop', steps: [{ realClick: '#dead', timeout: 800 }] },
   {
     name: 'quiet-check',
     viewport: 'desktop',
-    note: 'Чистая проверка докручивает список и возвращает — игра не должна услышать ни одного scroll',
+    note: 'A check scrolls the list and restores it; the game must receive no scroll events',
     steps: [
       { eval: 'document.getElementById("list").scrollTop = 0; window.scrolls = 0' },
       { hittable: '#inlist', timeout: 0, wait: 300 },
-      { expect: { fn: () => window.scrolls === 0 && document.getElementById('list').scrollTop === 0, msg: 'ни одного scroll, прокрутка на месте' } },
+      { expect: { fn: () => window.scrolls === 0 && document.getElementById('list').scrollTop === 0, msg: 'no scroll events and scroll position unchanged' } },
     ],
   },
   {
     name: 'body-free',
     viewport: 'desktop',
-    note: 'html заперт, body листается: кнопка ниже экрана достижима, прокрутка body возвращается',
+    note: 'Locked html, scrollable body: below-screen button is reachable and body scroll is restored',
     steps: [
       { eval: 'window.fullscreenCss(true)' },
       { hittable: '#below', timeout: 0 },
-      { expect: { fn: () => document.body.scrollTop === 0, msg: 'прокрутка body вернулась' } },
+      { expect: { fn: () => document.body.scrollTop === 0, msg: 'body scroll position restored' } },
       { realClick: '#below' },
-      { expect: { fn: () => window.clicks.below === 1, msg: 'клик дошёл' } },
+      { expect: { fn: () => window.clicks.below === 1, msg: 'click reached the button' } },
     ],
   },
   { name: 'body-locked', viewport: 'desktop', steps: [{ eval: 'window.fullscreenCss(false)' }, { hittable: '#below', timeout: 0 }] },
   {
     name: 'fail-shot-scrolled',
     viewport: 'desktop',
-    note: 'Перекрытая кнопка ниже экрана: кадр провала снимается там, где перекрытие видно',
+    note: 'Covered button below the screen: failure screenshot is captured where the overlay is visible',
     steps: [
       { eval: `const b = document.getElementById('below').getBoundingClientRect();
         const v = document.createElement('div');
@@ -79,23 +79,23 @@ export default [
           width: b.width + 'px', height: b.height + 'px', zIndex: 9 });
         v.id = 'cover'; document.body.appendChild(v); window.scrollTo(0, 0);` },
       { hittable: '#below', timeout: 0 },
-      // Посреди сценария провал прокрутку не оставляет: дальше идут шаги
-      { expect: { fn: () => window.scrollY === 0, msg: 'после провала посреди сценария прокрутка на месте' } },
-      // Следующий шаг листает тот же список, что проверка крутила туда и
-      // обратно, — его прокрутка обязана дойти до игры
+      // Mid-scenario failure restores scrolling because more steps follow.
+      { expect: { fn: () => window.scrollY === 0, msg: 'mid-scenario failure preserved scroll position' } },
+      // The next step scrolls the same list previously scrolled and restored
+      // by the check; this real scroll event must reach the game.
       { eval: 'document.getElementById("list").scrollTop = 0; window.scrolls = 0' },
       { hittable: '#inlist', timeout: 0 },
       { eval: 'document.getElementById("list").scrollTop = 40', wait: 300 },
-      { expect: { fn: () => window.scrolls >= 1, msg: 'настоящая прокрутка после проверки дошла до игры' } },
+      { expect: { fn: () => window.scrolls >= 1, msg: 'real scroll after the check reached the game' } },
     ],
-    // В конце сценария — докрутка к перекрытию для кадра провала
+    // End of scenario: scroll to the overlay for the failure screenshot.
     hittable: ['#below'],
   },
   { name: 'bad-selector', viewport: 'desktop', steps: [{ realClick: 'div[' }] },
   {
     name: 'late-cover',
     viewport: 'desktop',
-    note: 'В конце сценария кнопка свободна; накроют её позже — probe обязан судить там же, где play',
+    note: 'Button is clear at scenario end and covered later; probe must check at the same point as play',
     hittable: ['#later'],
     steps: [{ eval: 'window.coverLaterIn(2500)' }],
   },

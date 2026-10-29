@@ -1,17 +1,17 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Outside Loop (фикстура)</title>
+<title>Outside Loop (fixture)</title>
 <!--
-  Цикл rAF пустой, а рисует setInterval. Пиксели меняются, команды идут —
-  но не из кадра игры. Признак отрисовки обязан быть привязан к колбэку,
-  иначе рисующий таймер ручается за мёртвый игровой цикл.
+  The rAF loop is empty while setInterval draws. Pixels change and drawing
+  commands run outside game frames. Render activity must be tied to the
+  callback, or a drawing timer would hide a dead game loop.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>
 <script>
   const ctx = document.getElementById('game').getContext('2d');
   let t = 0;
-  (function loop() { requestAnimationFrame(loop); })();   // кадры идут, рисования нет
+  (function loop() { requestAnimationFrame(loop); })();   // frames without drawing
   setInterval(() => {
     t++;
     ctx.fillStyle = '#0b0e14'; ctx.fillRect(0, 0, 640, 400);

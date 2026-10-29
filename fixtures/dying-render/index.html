@@ -1,10 +1,10 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Dying Render (фикстура)</title>
+<title>Dying Render (fixture)</title>
 <!--
-  Рендер живёт первые кадры и умирает: дальше цикл крутится вхолостую.
-  Доля перерисованных кадров такая же, как у игры, которая рисует редко, —
-  различает их только хвост окна замера.
+  Rendering works for the first few frames, then dies while the loop idles.
+  Its redrawn-frame ratio resembles a game that draws rarely; only the
+  tail of the measurement window distinguishes them.
 -->
 <style>html,body{margin:0;height:100%;background:#0b0e14}canvas{display:block;margin:0 auto}</style>
 <canvas id="game" width="640" height="400"></canvas>
@@ -12,11 +12,11 @@
   const ctx = document.getElementById('game').getContext('2d');
   let t = 0;
 
-  // Умираем через 1.8 секунды ПОСЛЕ открытия окна замера, а не после загрузки.
-  // Иначе доля перерисованных кадров зависела бы от того, как быстро
-  // загрузилась страница, и фикстура то и дело проверяла бы соседнюю ветку.
-  // При окне в 3 секунды это даёт 60% кадров с отрисовкой и 40% хвоста —
-  // одинаково на любом каденсе, потому что обе величины считаются в кадрах.
+  // Stop 1.8 seconds AFTER the measurement window opens, not after page load.
+  // Otherwise the redrawn-frame ratio depends on page loading speed,
+  // making this fixture intermittently test a different branch.
+  // A 3-second window yields 60% drawing frames and a 40% idle tail,
+  // independent of cadence because both values are counted in frames.
   let deadline = Infinity;
   const reset = window.__forgeResetFrames;
   window.__forgeResetFrames = () => { if (reset) reset(); deadline = performance.now() + 1800; };

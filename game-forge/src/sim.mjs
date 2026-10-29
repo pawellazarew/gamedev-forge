@@ -2,19 +2,15 @@ import path from 'node:path';
 import { boot, loadAdapter } from './harness.mjs';
 import { runDir, linkLatest, writeJson, appendJsonl, color } from './util.mjs';
 
-/**
- * Массовая симуляция: бот проходит игру сотни раз без рендера и без реального
- * времени. Это единственный способ увидеть баланс — по одному прохождению
- * руками не отличить «сложно» от «не повезло».
- *
- * Весь цикл крутится ВНУТРИ страницы: round-trip Node↔браузер на каждый кадр
- * стоил бы ~1 мс, то есть 10 000 кадров = 10 секунд вместо 30 мс.
- */
+/** Batch simulation runs bots hundreds of times without rendering or real time.
+ * A single manual run cannot distinguish difficulty from bad luck.
+ * The entire loop runs inside the page: a Node/browser round trip costs about
+ * 1 ms per frame, turning 10,000 frames into 10 seconds instead of 30 ms. */
 export async function simulate(cfg, opts = {}) {
   const {
     runs = 60,
     bots = null,
-    maxTicks = 60 * 60 * 10, // 10 игровых минут при 60 fps
+    maxTicks = 60 * 60 * 10, // 10 game minutes at 60 fps
     sampleEvery = 60,
     seed0 = 1000,
     params = {},
@@ -23,20 +19,20 @@ export async function simulate(cfg, opts = {}) {
   } = opts;
 
   const adapter = await loadAdapter(cfg);
-  if (!adapter) throw new Error(`Для sim нужен адаптер: укажи adapter в forge.config.mjs (см. adapters/ADAPTER.md)`);
+  if (!adapter) throw new Error(`sim requires an adapter: set adapter in forge.config.mjs (see adapters/ADAPTER.md)`);
 
   const ctx = await boot(cfg, { viewport: cfg.viewport, seed: seed0, adapter, shell: true });
   const dir = runDir(cfg.dir, 'sim', stamp);
   const jsonl = path.join(dir, 'runs.jsonl');
 
   try {
-    // Сколько тиков в игровой секунде: у аркады это кадр (60), у idle-игры —
-    // секунда (1). Без этого 4 часа игры печатаются как 4 минуты.
+    // Ticks per game second: usually 60 for an arcade, but 1 for an idle game.
+    // Otherwise four hours of gameplay can be printed as four minutes.
     const tickRate = adapter.tickRate ?? 60;
     const botNames = bots || await ctx.page.evaluate(() => Object.keys(window.__FORGE__.bots || {}));
-    if (!botNames.length) throw new Error('Адаптер не объявил ни одного бота (__FORGE__.bots)');
+    if (!botNames.length) throw new Error('The adapter did not define any bots (__FORGE__.bots)');
 
-    // rAF выключаем: рендер съедает 90% времени и на логику не влияет.
+    // Pause rAF: rendering consumes about 90% of the time and does not affect logic.
     await ctx.page.evaluate(() => { window.__forgeRafPaused = true; });
 
     const t0 = Date.now();
@@ -49,7 +45,7 @@ export async function simulate(cfg, opts = {}) {
         chunk.forEach((r) => { r.bot = bot; r.seconds = +(r.ticks / tickRate).toFixed(1); });
         appendJsonl(jsonl, chunk);
         all.push(...chunk);
-        process.stdout.write(`\r  ${bot}: ${Math.min(i + n, runs)}/${runs} прогонов`);
+        process.stdout.write(`\r  ${bot}: ${Math.min(i + n, runs)}/${runs} runs`);
       }
       process.stdout.write('\n');
     }
@@ -74,14 +70,12 @@ export async function simulate(cfg, opts = {}) {
   }
 }
 
-/**
- * Тело раннера. Сериализуется в страницу целиком, поэтому никаких внешних
- * ссылок здесь быть не может — только аргумент.
- */
+/** Runner body, serialized into the page. All dependencies must come through
+ * the argument rather than external references. */
 function runBatch({ bot, seeds, maxTicks, sampleEvery, params }) {
   const api = window.__FORGE__;
   const policy = api.bots[bot];
-  if (!policy) throw new Error(`Бот "${bot}" не объявлен адаптером`);
+  if (!policy) throw new Error(`Bot "${bot}" is not defined by the adapter`);
   const out = [];
 
   for (const seed of seeds) {
@@ -90,10 +84,10 @@ function runBatch({ bot, seeds, maxTicks, sampleEvery, params }) {
     const samples = [];
     let ticks = 0;
     let state = api.state();
-    const memory = {}; // политика может хранить своё между кадрами
+    const memory = {}; // policy memory persists between frames
     let lastAction = null;
-    let lastOk = null; // сработало ли предыдущее действие — иначе политика
-                       // будет вечно долбиться в действие, на которое нет ресурсов
+    let lastOk = null; // whether the previous action succeeded;
+                       // otherwise the policy may repeat an action it cannot afford forever
 
     while (ticks < maxTicks && !state.over) {
       const input = policy(state, { ...params, seed, memory, tick: ticks, lastAction, lastOk });
@@ -124,10 +118,10 @@ function runBatch({ bot, seeds, maxTicks, sampleEvery, params }) {
 
 export function printSim(meta) {
   console.log(color.b(`\n${meta.game} — sim`));
-  console.log(`  прогонов: ${meta.totalRuns} (${meta.bots.join(', ')})`);
+  console.log(`  runs: ${meta.totalRuns} (${meta.bots.join(', ')})`);
   const gameHours = (meta.gameSecondsSimulated / 3600).toFixed(1);
-  console.log(`  игровых тиков: ${meta.totalTicks.toLocaleString('ru')} за ${(meta.wallMs / 1000).toFixed(1)}с ` +
-    color.dim(`(${gameHours} ч игрового времени, ×${Math.round(meta.ticksPerSecond / meta.tickRate).toLocaleString('ru')} к реальному)`));
-  if (meta.errors.length) console.log(color.warn(`  ошибок в консоли: ${meta.errors.length}`));
-  console.log(color.dim(`  сырые данные: ${meta.jsonl}`));
+  console.log(`  game ticks: ${meta.totalTicks.toLocaleString('en')} in ${(meta.wallMs / 1000).toFixed(1)}s ` +
+    color.dim(`(${gameHours} h of game time, ×${Math.round(meta.ticksPerSecond / meta.tickRate).toLocaleString('en')} realtime)`));
+  if (meta.errors.length) console.log(color.warn(`  console errors: ${meta.errors.length}`));
+  console.log(color.dim(`  raw data: ${meta.jsonl}`));
 }

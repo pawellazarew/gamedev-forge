@@ -6,25 +6,22 @@ import { hittableChecks, hittableFor, hittableSummary, settleOf } from './hittes
 import { frameStats, pixelDiffRatio } from './png.mjs';
 import { runDir, linkLatest, writeJson, mean, median, percentile, filterNoise, color, verdictMark } from './util.mjs';
 
-/** Меньше этого числа кадров — мерить нечего, вердикт по производительности пуст. */
+/** Below this frame count there is no meaningful performance sample. */
 export const MIN_FRAMES = 5;
-/** Кадров хватает на число, но не на доверие к нему. */
+/** Enough frames to produce a number, but not enough to trust it. */
 export const THIN_FRAMES = 20;
-/** Ниже этой доли перерисованных кадров игра рисует урывками, а не живёт. */
+/** Below this painted-frame fraction, the game draws intermittently rather than continuously. */
 export const MIN_PAINT_SHARE = 0.5;
-/**
- * Доля изменившихся пикселей, ниже которой картинка считается застывшей.
- * Замерено: у застывших фикстур (zombie, ghost-backbuffer, dirty-render) и у
- * WebGL-игры, перерисовывающей одинаковые кадры, ровно 0; у живых — от 0.0006
- * (Phaser 3 на спокойной сцене) до 0.026. Порог поставлен в пустоту между
- * ними и намеренно ближе к нулю: ошибиться в сторону «шевелится» безопаснее,
- * чем обвинить живую игру.
- */
+/** Minimum changed-pixel fraction for a moving image. Frozen fixtures (zombie,
+ * ghost-backbuffer, dirty-render) and WebGL redraws of identical images
+ * measure exactly 0; live games measure 0.0006 (quiet Phaser scene) to 0.026.
+ * Place the threshold between them, closer to zero: a false movement signal
+ * is safer than incorrectly failing a healthy game. */
 export const PIXEL_CHANGE_EPS = 0.0001;
-/** Сколько ждём start(): зависший старт должен давать красный прогон, а не висеть в CI. */
+/** Startup deadline: a stuck start must fail rather than hang CI. */
 const START_TIMEOUT_MS = 30000;
 
-/** Промис с крайним сроком: у page.evaluate своего таймаута нет. */
+/** Promise deadline wrapper: page.evaluate has no built-in timeout. */
 function withTimeout(promise, ms, message) {
   let timer;
   return Promise.race([
@@ -33,100 +30,80 @@ function withTimeout(promise, ms, message) {
   ]);
 }
 
-/**
- * Объективные измерения без участия человека: работа главного потока в кадре,
- * пик draw call'ов, ошибки, вес, память и признаки «мёртвого» кадра.
- * Работает с любой веб-игрой — адаптер не обязателен.
- */
+/** Automated measurements: main-thread frame work, peak draw calls, errors,
+ * size, memory and dead-frame signals. Works without a game adapter. */
 export async function probe(cfg, opts = {}) {
   const { seconds = 8, seed = 1, stamp, headless = true, scenario = null } = opts;
-  // Замер нулевой длины давал 0 кадров, 0 мс работы и зелёный вердикт — то есть
-  // performance gate, который проходит любая игра. Проверяем до всего остального,
-  // чтобы опечатка стоила ошибку, а не запуск браузера.
+  // A zero-length window used to yield zero work and a green verdict, passing
+  // any game. Validate before launching the browser so a typo fails cheaply.
   if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new Error(`--seconds должен быть положительным числом, получено «${seconds}»: замер нулевой длины ничего не измеряет`);
+    throw new Error(`--seconds must be a positive number, got «${seconds}»: a zero-length window measures nothing`);
   }
-  // Ошибку загрузки адаптера не глушим: сломанный адаптер должен падать,
-  // а не притворяться отсутствующим.
+  // Propagate adapter-loading failures. A broken adapter must not look absent.
   const adapter = cfg.adapterFile ? await loadAdapter(cfg) : null;
 
-  // Сценарий ищем ДО запуска браузера: вьюпорт задаётся при создании контекста
-  // и потом не меняется, а сцена «phone», снятая в десктопном окне, — это
-  // замер другой сцены.
+  // Resolve scenarios before browser launch because viewport is fixed when
+  // the context is created. A phone scene in a desktop window is a different scene.
   const sc = scenario ? await findScenario(cfg, scenario) : null;
   const viewport = resolveViewport(opts.viewport, sc, cfg);
 
-  // headless:false запускает настоящий браузер с GPU — единственный способ
-  // получить осмысленную стоимость кадра для WebGL-игры.
+  // headless:false preserves the real GPU path for meaningful WebGL investigation.
   const ctx = await boot(cfg, { viewport, seed, adapter, headless });
 
   try {
     let scenePath = null;
     let hitChecks = [];
     if (sc) {
-      // Мерить надо тяжёлую сцену, а не стартовую комнату: `--scenario storm-peak`
-      // прогоняет шаги обычного сценария (без съёмки) и только потом включает
-      // счётчики. Без этого требование «замерить пик» не автоматизируется.
-      // Перекрытие на шагах сцены — находка, а не сорванная подготовка.
+      // Measure a demanding scene, not the opening room. --scenario storm-peak
+      // runs ordinary scenario steps without screenshots before enabling counters.
+      // An overlay found during these steps is a finding, not failed preparation.
       hitChecks = (await prepareScene(ctx.page, sc, cfg)).filter((c) => c.kind === 'hittable');
       scenePath = sc.name;
-      // Кликабельность в конце сцены — там же, где её проверяет play: после
-      // окна за 8 секунд игры успели бы всплыть конец раунда или реклама, и
-      // вердикты probe и play по одному сценарию разошлись бы. До окна
-      // проверка ничего не портит: прокрутку она возвращает, а её ожидание
-      // заканчивается раньше, чем обнулятся счётчики кадров.
+      // Check hit targets at the same scenario boundary as play, before measuring.
+      // After eight game seconds an end screen or advertisement could change the
+      // result. The check restores scrolling and finishes waiting before counters reset.
       const sels = hittableFor(sc, cfg);
       if (sels.length) hitChecks.push(...await hittableChecks(ctx.page, sels, settleOf(cfg)));
     } else if (adapter?.autostart !== false) {
-      // Хоть до геймплея: на титульном экране кадр всегда дешёвый.
-      //
-      // Ошибку start() НЕ глушим. По контракту адаптера start() обязателен, и
-      // упавший старт означает ровно одно: probe померит титульный экран и
-      // назовёт его игрой. Возвращаемое значение при этом намеренно
-      // выбрасываем — start(), вернувший что-нибудь несериализуемое, ронял бы
-      // evaluate на ровном месте.
+      // Advance to gameplay: title screens are always cheap. Propagate start()
+      // errors; otherwise the title screen would be measured as the game. Discard
+      // the return value because unserializable results can break evaluate.
       try {
-        // `async` и `await` тут несущие: без них промис асинхронного start()
-        // выбрасывается, evaluate возвращается сразу, а замер идёт по
-        // стартовому экрану — и падение start() снова оказывается проглочено.
-        // Значение всё равно не возвращаем: несериализуемый результат ронял бы
-        // evaluate на ровном месте.
+        // async/await are required: dropping the startup promise returns immediately,
+        // measures the title screen and swallows startup failures. Still discard the
+        // result to avoid serialization failures.
         const started = await withTimeout(
           ctx.page.evaluate(async () => {
             const api = window.__FORGE__;
-            if (!api) return 'нет __FORGE__';
-            if (typeof api.start !== 'function') return 'нет start()';
+            if (!api) return 'missing __FORGE__';
+            if (typeof api.start !== 'function') return 'missing start()';
             await api.start({ mode: 0 });
             return null;
           }),
           START_TIMEOUT_MS,
-          `start() не завершился за ${START_TIMEOUT_MS / 1000} с`,
+          `start() did not finish within ${START_TIMEOUT_MS / 1000} s`,
         );
-        // Адаптер подключён — значит start() обязателен по контракту. Молча
-        // мерить стартовый экран из-за опечатки в имени метода нельзя.
-        if (adapter && started) throw new Error(`${started} — адаптер обязан ставить window.__FORGE__.start()`);
+        // A connected adapter must expose start(). A method-name typo must not
+        // silently cause measurement of the title screen.
+        if (adapter && started) throw new Error(`${started} — the adapter must define window.__FORGE__.start()`);
       } catch (err) {
-        throw new Error(`__FORGE__.start() упал: ${String(err?.message || err).slice(0, 300)}. `
-          + 'Замер отменён: probe померил бы стартовый экран вместо игры.');
+        throw new Error(`__FORGE__.start() failed: ${String(err?.message || err).slice(0, 300)}. `
+          + 'Measurement cancelled: probe would measure the title screen instead of gameplay.');
       }
     }
 
-    // Каталог заводим после подготовки сцены: у сорванного замера свой,
-    // с красным вердиктом и причиной.
+    // Create the run directory after scene preparation; an aborted measurement
+    // gets a separate failed artifact with its reason.
     const dir = runDir(cfg.dir, 'probe', stamp);
 
-    // Кадр «до» — страховка на случай, если игра рисует мимо инструментированных
-    // API (воркер, WebGPU, DOM/CSS): тогда команд рисования не видно, а пиксели
-    // всё равно меняются, и красный вердикт был бы враньём. Снимаем ДО сброса
-    // счётчиков, чтобы полсотни миллисекунд самого скриншота не попали в окно.
-    //
-    // Снимаем КАНВАС, а не страницу: счётчик кадров в DOM рядом с игрой — это
-    // «пиксели меняются» при намертво застывшей игре.
-    // Считать отрисовку и сравнивать пиксели надо по ОДНОМУ И ТОМУ ЖЕ канвасу.
-    // Разрешаем его один раз здесь и отдаём странице САМ ЭЛЕМЕНТ: два
-    // независимых `querySelector` расходятся на любой странице с двумя
-    // канвасами, а Playwright вдобавок пробивает shadow DOM, чего
-    // `document.querySelector` внутри страницы не делает.
+    // Take a before screenshot in case the game bypasses instrumented APIs
+    // (worker, WebGPU, DOM/CSS): changing pixels can prove activity despite no
+    // observed draw commands. Capture before resetting counters so screenshot
+    // overhead stays outside the measurement window.
+    // Capture the game canvas, not a neighboring DOM counter. Resolve the canvas
+    // once and pass that exact element into the page so paint counts and pixel
+    // comparison cannot diverge. Playwright selectors also pierce shadow DOM,
+    // unlike document.querySelector.
     const selector = cfg.canvasSelector || sc?.selector || null;
     const canvasEl = await resolveCanvas(ctx.page, selector);
     if (canvasEl) await canvasEl.evaluate((node) => { window.__forgeCanvas = node; });
@@ -152,8 +129,7 @@ export async function probe(cfg, opts = {}) {
       };
     });
 
-    // Кадр анализируем по скриншоту, а не изнутри страницы: у WebGL-канваса
-    // буфер к этому моменту уже очищен, и любой внутренний замер даст чёрное.
+    // Analyze the screenshot, not an in-page read: WebGL buffers may already be cleared.
     const framePath = path.join(dir, 'frame.png');
     const shot = await ctx.page.screenshot({ path: framePath });
     let canvasStats = null;
@@ -163,18 +139,18 @@ export async function probe(cfg, opts = {}) {
       canvasStats = { error: String(err.message || err) };
     }
 
-    // Доля изменившихся пикселей, а не «побайтово равны»: моргающий счётчик
-    // не должен выдавать застывшую игру за живую.
+    // Use a changed-pixel ratio, not byte equality, so a blinking counter cannot
+    // make a frozen game look alive.
     let pixelChange = null;
     try {
       const after = await shoot(canvasEl, ctx.page);
       pixelChange = +pixelDiffRatio(before, after).toFixed(4);
-      // «Живой ли кадр» тоже про игровой канвас, а не про страницу: игра с
-      // чёрным канвасом проходила на цветах окружающей вёрстки.
+      // Image-content checks also use the game canvas; surrounding page colors
+      // must not make a black game canvas pass.
       canvasStats = frameStats(after);
-    } catch { /* не сравнили — значит «не знаем», а не «застыло» */ }
+    } catch { /* Comparison unavailable means unknown, not frozen. */ }
 
-    // Перекрытие — находка, а не сорванная сцена: числа замера остаются в силе
+    // An overlay is a finding, not a failed scene; measured metrics remain valid.
     const extraChecks = hitChecks.length ? [hittableSummary(hitChecks)] : [];
 
     const metrics = computeMetrics(raw, {
@@ -191,10 +167,9 @@ export async function probe(cfg, opts = {}) {
     linkLatest(cfg.dir, 'probe', dir);
     return { metrics, dir };
   } catch (err) {
-    // Любой срыв — сцена, старт, упавший скриншот, схлопнувшийся браузер —
-    // обязан оставить красный артефакт. Иначе после него latest-probe
-    // указывает на прошлый зелёный прогон, и `report`/`critique` выдают
-    // вчерашние числа за сегодняшние.
+    // Any interruption (scene, start, screenshot or browser failure) must leave
+    // a failed artifact. Otherwise latest-probe still points at an earlier
+    // passing run and report/critique misrepresent stale numbers as current.
     writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario: sc?.name ?? null, headless, reason: String(err?.message || err) });
     throw err;
   } finally {
@@ -202,20 +177,17 @@ export async function probe(cfg, opts = {}) {
   }
 }
 
-/** Пустые счётчики: замер не состоялся, и метрики должны говорить именно это. */
-// paintFrames: null — «не мерили». Ноль означал бы «игра не рисовала», и
-// артефакт сорванного замера утверждал бы про рендер то, чего никто не видел.
+/** Empty counters state explicitly that no measurement was obtained. */
+// paintFrames:null means unmeasured. Zero would assert that rendering did
+// not happen, which an aborted measurement cannot establish.
 const NO_MEASUREMENT = {
   frames: 0, longFrames: 0, times: [], work: [], workTotal: 0, workMax: 0,
   gameFrames: 0, paintFrames: null, otherPaintFrames: null, draws: [], drawsMax: 0, drawsTotal: 0,
   elapsedMs: 0, heapBytes: null, state: null,
 };
 
-/**
- * Артефакт сорванного замера: полноценный probe.json с красным вердиктом.
- * Сама по себе упасть не имеет права — иначе подменит собой исходную ошибку,
- * ради которой её и вызвали.
- */
+/** Aborted-measurement artifact: a complete failed probe.json. This helper
+ * must not throw and replace the original error it was called to record. */
 function writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario, headless, reason }) {
   try {
     const metrics = computeMetrics(NO_MEASUREMENT, {
@@ -235,11 +207,8 @@ function writeAbort(cfg, { stamp, ctx, viewport, seconds, scenario, headless, re
   }
 }
 
-/**
- * Игровой канвас: явный селектор, иначе самый большой видимый.
- * Первый в DOM не годится — полоска индикатора или прелоадер, объявленные
- * раньше игрового канваса, забирали бы на себя весь замер отрисовки.
- */
+/** Use an explicit game canvas selector or the largest visible canvas. The
+ * first DOM canvas might be an indicator/preloader and steal the paint count. */
 async function resolveCanvas(page, selector) {
   const els = await page.$$(selector || 'canvas');
   if (els.length <= 1) return els[0] || null;
@@ -251,16 +220,14 @@ async function resolveCanvas(page, selector) {
   return best;
 }
 
-/**
- * Снимок канваса; если его нет или он спрятан — страницы целиком.
- * Без таймаута скриншот спрятанного канваса ждёт видимости полминуты и
- * роняет прогон по чужой причине.
- */
+/** Screenshot the canvas, or the full page if it is absent/hidden. Bound the
+ * wait so a hidden canvas cannot spend 30 seconds waiting for visibility
+ * and fail the run for an unrelated reason. */
 async function shoot(el, page) {
   if (el) {
     try {
       return await el.screenshot({ timeout: 2000 });
-    } catch { /* спрятан, пересоздан или отвалился — снимем страницу */ }
+    } catch { /* Hidden, recreated or detached; capture the page instead. */ }
   }
   return page.screenshot();
 }
@@ -269,70 +236,62 @@ async function findScenario(cfg, name) {
   const all = await loadScenarios(cfg);
   const sc = all.find((s) => s.name === name);
   if (!sc) {
-    throw new Error(`Сценарий "${name}" не найден. Есть: ${all.map((s) => s.name).join(', ') || '(ни одного)'}`);
+    throw new Error(`Scenario "${name}" not found. Available: ${all.map((s) => s.name).join(', ') || '(none)'}`);
   }
   return sc;
 }
 
-/**
- * Довести игру до нужной сцены теми же шагами, что и сценарий.
- *
- * Проваленный expect здесь — не замечание, а отмена замера. Раньше каждому шагу
- * доставался свой пустой массив checks, он тут же терялся, и probe продолжал
- * мерить сцену, которая не собралась: числа выходили зелёными именно потому,
- * что измеряли не то.
- */
+/** Prepare the target scene using the same scenario steps. A failed expect
+ * cancels measurement: losing each step's checks previously let probe
+ * measure an unprepared scene and report misleading passing numbers. */
 export async function prepareScene(page, sc, cfg) {
   const checks = [];
   for (const [i, step] of (sc.steps || []).entries()) {
     await applyStep(page, step, { sc, i, shots: [], checks, cfg, skipShots: true });
-    // Проваленный шаг hittable сцену не срывает: игра доведена куда надо,
-    // просто что-то перекрыто. probe отдаст это отдельной проверкой.
+    // A failed hittable step does not cancel preparation: the scene exists but
+    // a control is covered. Report it through a separate probe check.
     const failed = checks.find((c) => c.status === 'fail' && c.kind !== 'hittable');
     if (failed) {
       throw new Error(
-        `Сцена «${sc.name}» не подготовлена: шаг ${i + 1}, «${failed.name}» — ${failed.detail}. ` +
-        'Замер отменён: мерить неподготовленную сцену бессмысленно.',
+        `Scene «${sc.name}» was not prepared: step ${i + 1}, «${failed.name}» — ${failed.detail}. ` +
+        'Measurement cancelled: measuring an unprepared scene is meaningless.',
       );
     }
   }
   return checks;
 }
 
-/**
- * Чистая функция: сырые счётчики из страницы → метрики и вердикт.
- * Отделена от браузера, чтобы её можно было проверить тестами без запуска игры.
- */
+/** Pure conversion from page counters to metrics and verdict, separated from
+ * the browser so tests need not launch a game. */
 export function computeMetrics(raw, {
   cfg, viewport, seconds, scenario = null, headless = true,
   loadMs = 0, bundleKb = 0, errors = [], canvas = null, pixelChange = null, extraChecks = [],
 }) {
   const budgetMs = cfg.budgets?.frameMs ?? 16.7;
 
-  // ГЛАВНАЯ метрика — сколько игра реально считала и рисовала внутри кадра.
-  // Интервал между кадрами для этого не годится: при живом vsync он равен
-  // периоду дисплея (8.3 мс на 120 Гц) независимо от объёма работы.
+  // The main metric is actual computation/drawing inside game callbacks.
+  // Vsync intervals follow the display period (8.3 ms at 120 Hz) regardless of work.
   const works = (raw.work || []).filter((t) => t >= 0 && t < 5000);
-  // Размер выборки — часть результата, а не служебная деталь: без него ноль
-  // миллисекунд «уложился в бюджет» неотличим от «замера не было».
+  // Sample size is part of the result: without it, zero measured work is
+  // indistinguishable from a measurement that never happened.
   const workSamples = works.length;
   const frameWorkMs = works.length ? +median(works).toFixed(2) : 0;
   const frameWorkP99Ms = works.length ? +percentile(works, 99).toFixed(2) : 0;
   const frameWorkMaxMs = +(raw.workMax || 0).toFixed(2);
-  // Запас считаем от НАСТРОЕННОГО бюджета: у 3D-прототипов он 8 мс, и запас
-  // «×1.67» относительно 16.7 был бы утешительной выдумкой.
+  // Compute headroom from the configured budget. For an 8 ms 3D budget,
+  // headroom relative to 16.7 ms would be invented reassurance.
   const headroom = frameWorkMs ? +(budgetMs / frameWorkMs).toFixed(2) : 0;
   const mainThreadBusy = raw.elapsedMs ? +(raw.workTotal / raw.elapsedMs).toFixed(3) : 0;
 
-  // Каденс — справочно: частота показа кадров, а не их цена.
+  // Cadence is reference information: presentation rate, not frame cost.
   const dts = (raw.times || []).filter((t) => t > 0 && t < 1000);
   const frameSamples = dts.length;
   const frameIntervalMs = dts.length ? +median(dts).toFixed(2) : 0;
   const fps = dts.length ? 1000 / mean(dts) : 0;
   const fps1pctLow = dts.length ? 1000 / percentile(dts, 99) : 0;
 
-  // Draw calls — покадрово. Гейт по пику, а не по среднему: тормозит игра
-  // на тяжёлом кадре, и он же вылетает из бюджета GPU.
+  // Count draw calls per frame and gate on the peak, which causes the stall
+  // and exceeds the GPU budget even when average load is low.
   const draws = raw.draws || [];
   const drawCallsMedian = draws.length ? Math.round(median(draws)) : 0;
   const drawCallsP99 = draws.length ? Math.round(percentile(draws, 99)) : 0;
@@ -356,20 +315,18 @@ export function computeMetrics(raw, {
     fpsAvg: +fps.toFixed(1),
     fps1pctLow: +fps1pctLow.toFixed(1),
     frames: raw.frames,
-    // Кадры пробы и кадры игры расходятся ровно там, где это важно: мёртвый
-    // цикл рендера даёт полсотни кадров пробы и ноль кадров игры.
+    // Probe and game frame counts diverge when it matters: a dead game loop
+    // can still produce dozens of probe frames.
     gameFrames: raw.gameFrames ?? null,
-    // Кадры с фактической отрисовкой: живой цикл rAF ещё не значит, что игра
-    // что-то нарисовала.
+    // Frames with actual paint commands: a live rAF loop alone proves no drawing.
     paintFrames: raw.paintFrames ?? null,
-    // На каком кадре пробы игра рисовала в последний раз: «рисует редко» и
-    // «рисовал и умер» дают одинаковую долю кадров и различаются только этим.
+    // The last probe frame with drawing distinguishes sparse redraws from
+    // a renderer that ran and then stopped.
     lastPaintAt: raw.lastPaintAt ?? null,
-    // Кадры, в которых игра рисовала на ДРУГОМ канвасе: это не приговор, а
-    // подсказка «probe смотрит не на тот канвас».
+    // Drawing on another canvas suggests the probe target may be wrong, not a failure by itself.
     otherPaintFrames: raw.otherPaintFrames ?? null,
-    // Доля изменившихся пикселей канваса между началом и концом окна;
-    // null — сравнить не удалось, и это «не знаем», а не «застыло».
+    // Canvas pixel changes over the window. null means unknown comparison,
+    // not a frozen image.
     pixelChange,
     renderMode: cfg.renderMode ?? 'continuous',
     workSamples,
@@ -382,8 +339,8 @@ export function computeMetrics(raw, {
     drawCallsAvg,
     heapMb: raw.heapBytes ? +(raw.heapBytes / 1048576).toFixed(1) : null,
     canvas,
-    // В headless WebGL идёт через софтверный SwiftShader: числа кадра
-    // показывают относительную динамику, но не реальную скорость на GPU.
+    // Headless WebGL uses SwiftShader; frame metrics indicate relative trends,
+    // not hardware GPU speed.
     softwareGl: cfg.renderer === 'webgl' && headless,
     headless,
     errors,
@@ -391,118 +348,96 @@ export function computeMetrics(raw, {
     state: raw.state ?? null,
   };
 
-  // extraChecks — проверки не про кадр (кликабельность в конце сценария),
-  // но вердикт у probe один, и красная из них обязана его красить.
+  // extraChecks cover non-frame findings such as end-of-scenario hit targets.
+  // Any failed extra check must affect the one overall probe verdict.
   metrics.checks = [...evaluateBudgets(metrics, cfg.budgets || {}), ...extraChecks];
   metrics.verdict = metrics.checks.some((c) => c.status === 'fail') ? 'fail'
     : metrics.checks.some((c) => c.status === 'warn') ? 'warn' : 'pass';
   return metrics;
 }
 
-/**
- * Причина у провала выборки всегда одна из трёх, и лечатся они по-разному.
- * Общая формулировка «слишком короткий --seconds» на мёртвом цикле рендера
- * отправляет чинить не то.
- */
+/** Three sample-failure causes require different fixes. Blaming a short
+ * --seconds window for a dead rendering loop would send the user astray. */
 function sampleFailure(frames, gameFrames, workSamples, seconds) {
   if (frames < MIN_FRAMES) {
-    return `кадров пробы ${frames} за ${seconds ?? '?'} с — окно замера почти нулевое `
-      + 'или вкладка заморожена: подними --seconds';
+    return `${frames} probe frames in ${seconds ?? '?'} s; the measurement window is nearly zero `
+      + 'or the tab is frozen: increase --seconds';
   }
   if (gameFrames === 0) {
-    return `игра не нарисовала ни одного кадра за ${frames} кадров пробы — цикл рендера не запущен, `
-      + 'сломан или идёт не через requestAnimationFrame (тогда probe этой игре не судья)';
+    return `the game did not draw a single frame during ${frames} probe frames; the rendering loop never started, `
+      + 'is broken or does not use requestAnimationFrame (outside the scope of this probe)';
   }
   if (workSamples === 0) {
-    return `${gameFrames} кадров игры, но ни одного валидного замера работы — `
-      + 'инструментирование кадра сломано, числам верить нельзя';
+    return `${gameFrames} game frames but no valid work samples; `
+      + 'frame instrumentation is broken; the numbers are unreliable';
   }
-  return `кадров игры ${gameFrames} из ${frames} кадров пробы — нужно ≥${MIN_FRAMES}: `
-    + 'игра рисует урывками или окно замера слишком короткое';
+  return `${gameFrames} game frames out of ${frames} probe frames; need >=${MIN_FRAMES}: `
+    + 'the game draws intermittently or the measurement window is too short';
 }
 
 export function evaluateBudgets(m, b) {
   const checks = [];
   const add = (name, status, detail) => checks.push({ name, status, detail });
 
-  // Первой идёт достоверность самого замера. Пустая выборка красит всё
-  // остальное в зелёный: ноль миллисекунд работы укладывается в любой бюджет,
-  // ноль draw call'ов — тоже. Это провал ЗАМЕРА, а не игры, и молчать о нём
-  // нельзя: иначе `--seconds 0` (или мёртвый цикл рендера) выдаёт зелёный
-  // performance gate, который не проходил никто.
-  //
-  // Считаем кадры ИГРЫ. Кадры пробы для этого не годятся: tickProbe крутит
-  // свой rAF сам и насчитает полсотни «кадров» странице, которая ничего не
-  // рисует, — то есть ровно тот случай, ради которого проверка и добавлена.
+  // Validate the measurement first. Empty samples yield zero work/draw calls
+  // that pass every budget; this is a measurement failure, not a healthy game.
+  // Count game frames rather than tickProbe's own rAF frames, which continue
+  // even while the game draws nothing.
   const frames = m.frames || 0;
-  const gameFrames = m.gameFrames ?? frames;   // старые probe.json без поля читаем по-старому
+  const gameFrames = m.gameFrames ?? frames;   // Read old probe.json files without this field using legacy behavior.
   const workSamples = m.workSamples ?? 0;
   const onDemand = m.renderMode === 'on-demand';
   const partial = workSamples > 0 && workSamples < gameFrames;
   const measured = gameFrames >= MIN_FRAMES && workSamples > 0;
-  // Игра, рисующая по событию, может честно не нарисовать НИ ОДНОГО кадра и
-  // не завести rAF вовсе — настоящий Wordle так и устроен. Стоимость кадра у
-  // неё не измерена, и это единственное, что тут можно сказать честно.
-  // Красный вердикт означал бы «сломана», а она работает.
+  // On-demand games can legitimately have no rAF or drawn frames, as in
+  // Wordle. Their frame cost is unmeasured; a failed verdict would falsely
+  // claim the functioning game is broken.
   const emptyWindow = frames < MIN_FRAMES;
-  // Помилование ровно на один случай: цикла нет вовсе. Один-четыре кадра игры
-  // означают, что цикл был и оборвался, — а это поломка при любом renderMode.
+  // Only a completely absent loop is exempt. One to four game frames imply
+  // a loop that started and stopped, a failure under either render mode.
   const pardon = onDemand && !emptyWindow && gameFrames === 0;
   add('sample',
     measured ? ((gameFrames < THIN_FRAMES || partial) ? 'warn' : 'pass')
       : pardon ? 'warn' : 'fail',
     measured
-      ? `${gameFrames} кадров игры из ${frames} кадров пробы за ${m.seconds ?? '?'} с`
-        + (gameFrames < THIN_FRAMES ? ` — выборка тоньше ${THIN_FRAMES} кадров, числа шумят` : '')
-        + (partial ? ` — замеров работы только ${workSamples}: числа описывают начало окна, а не всё` : '')
+      ? `${gameFrames} game frames out of ${frames} probe frames in ${m.seconds ?? '?'} s`
+        + (gameFrames < THIN_FRAMES ? ` — sample below ${THIN_FRAMES} frames; numbers are noisy` : '')
+        + (partial ? ` — only ${workSamples} work samples: numbers describe the start of the window, not all of it` : '')
       : pardon
-        ? `цикл рендера не запускался за ${m.seconds ?? '?'} с — стоимость кадра не измерена. `
-          + 'renderMode: on-demand, игра рисует по событию: без ввода ей нечего перерисовывать'
+        ? `rendering loop did not run for ${m.seconds ?? '?'} s; frame cost was not measured. `
+          + 'renderMode: on-demand; the game draws on events and has nothing to redraw without input'
         : sampleFailure(frames, gameFrames, workSamples, m.seconds));
 
-  // Живой цикл rAF — ещё не отрисовка. `requestAnimationFrame(loop)` с пустым
-  // телом даёт полный набор кадров игры на застывшей картинке, и по кадрам
-  // всё выглядит идеально. Считаем кадры, в которых игра выдавала команды
-  // рисования (2D-канвас или WebGL).
-  //
-  // Одних команд мало для приговора: игра может рисовать мимо них — из воркера,
-  // через WebGPU или вообще средствами DOM/CSS. Поэтому решает пара «команд не
-  // видно» + «ни один пиксель не изменился»; если пиксели меняются, это
-  // предупреждение о слепой зоне инструментирования, а не провал игры.
+  // A full stream of empty rAF callbacks can accompany a frozen image. Count
+  // frames issuing 2D/WebGL drawing commands. Commands alone are insufficient:
+  // workers, WebGPU or DOM/CSS may bypass instrumentation. Missing commands
+  // plus unchanged pixels justify failure; changing pixels imply an
+  // instrumentation blind spot and should only warn.
   const paintFrames = m.paintFrames ?? null;
-  // При нуле кадров игры говорить о её отрисовке нечего — там уже высказался
-  // sample, а «цикл крутится» было бы прямой ложью.
+  // With no game frames, sample has already explained the absence. Do not
+  // claim that its loop is running or infer paint activity.
   if (paintFrames != null && gameFrames > 0) {
     const share = paintFrames / gameFrames;
-    // Доля, а не абсолютное число: пять перерисованных кадров из семисот —
-    // это умерший на второй секунде рендер, а не живая игра.
+    // Use a fraction, not an absolute count: five painted frames out of 700
+    // indicate rendering that died, not a live game.
     const enoughPaint = paintFrames >= MIN_FRAMES && share >= MIN_PAINT_SHARE;
     const frozen = m.pixelChange != null && m.pixelChange < PIXEL_CHANGE_EPS;
     const pct = `${Math.round(share * 100)}%`;
 
-    // «Рисует редко» и «рисовал и перестал» дают одинаковую долю кадров.
-    // Различает их только хвост окна: игра, которая перерисовалась пять раз
-    // в начале и умерла, — авария, а не редкая перерисовка.
+    // Sparse redraws and rendering that stopped can have the same ratio.
+    // A long unpainted tail distinguishes a renderer that died after its first draws.
     const tail = Math.max(MIN_FRAMES, Math.round(frames * 0.25));
     const gap = paintFrames > 0 && m.lastPaintAt != null ? frames - m.lastPaintAt : null;
     const stopped = gap != null && gap > tail;
 
-    // «Рисует каждый кадр, а картинка не меняется» — это потерянный blit,
-    // рендер в никуда или застрявшая сцена. Не провал (WebGL-игра честно
-    // перерисовывает одинаковые кадры), но и не молчание.
-    // Провал за остановку — только если игра до этого рисовала ПОЛНОЦЕННО.
-    // Иначе под него попадает заставка, которая доиграла анимацию и замерла в
-    // ожидании ввода, — а таких экранов у любой игры больше, чем сломанных
-    // рендеров. Порог доли при этом абсолютный, а хвост — доля окна, поэтому
-    // без этого условия вердикт зависел бы ещё и от каденса раннера.
-    //
-    // Застывшие пиксели при полноценной отрисовке — НЕ повод для жёлтого.
-    // Игра, дошедшая до «game over», вставшая на паузу или показывающая
-    // спокойную сцену, честно перерисовывает одну и ту же картинку, и отличить
-    // её от рисунка в никуда без ввода нечем. Замерено: у здоровой фикстуры
-    // tiny-game это ровно тот случай на односекундном окне. Пишем пометкой в
-    // тексте — потерянный blit ловится тем, что отрисовки на игровом канвасе
-    // нет вовсе.
+    // Identical pixels on every redraw can mean a lost blit, an offscreen
+    // render or a still scene. Only fail a stopped renderer if it previously
+    // painted most frames; otherwise a title animation settling into an input
+    // wait would fail, and runner cadence would affect the verdict.
+    // Frozen pixels with full drawing activity are not a warning by themselves:
+    // game over, pause and quiet scenes can redraw the same image legitimately.
+    // The healthy tiny-game fixture does this in a one-second window. Add a
+    // text note; missing game-canvas drawing catches a genuinely lost blit.
     const status = paintFrames === 0 ? (!frozen ? 'warn' : onDemand ? 'warn' : 'fail')
       : (stopped && enoughPaint) ? (onDemand ? 'warn' : 'fail')
         : (stopped || !enoughPaint) ? 'warn'
@@ -511,117 +446,107 @@ export function evaluateBudgets(m, b) {
     add('render', status,
       paintFrames === 0
         ? (!frozen
-          ? `команд рисования не видно за ${gameFrames} кадров игры, но пиксели канваса меняются — `
-            + 'игра рисует мимо 2D/WebGL (воркер, WebGPU, DOM/CSS): цена кадра измерена, живость рендера — нет'
-          : `за ${m.seconds ?? '?'} с игра не выдала ни одной команды рисования и ни один пиксель канваса `
-            + `не изменился (${gameFrames} кадров игры вхолостую) — рендер мёртв`
-            + (m.otherPaintFrames ? `. Но на другом канвасе отрисовка шла ${m.otherPaintFrames} кадров — `
-              + 'если игровой канвас не тот, укажи canvasSelector в конфиге' : '')
-            + (onDemand ? '. renderMode: on-demand — для игры, которая рисует по событию, это норма' : ''))
+          ? `no draw commands observed in ${gameFrames} game frames, but canvas pixels change; `
+            + 'the game bypasses 2D/WebGL (worker, WebGPU, DOM/CSS): frame cost was measured, render activity was not'
+          : `in ${m.seconds ?? '?'} s the game issued no draw commands and no canvas pixel `
+            + `changed (${gameFrames} idle game frames); rendering is dead`
+            + (m.otherPaintFrames ? `. However, another canvas was painted in ${m.otherPaintFrames} frames — `
+              + 'if the game canvas is different, set canvasSelector in the config' : '')
+            + (onDemand ? '. renderMode: on-demand; this is normal for event-driven rendering' : ''))
         : stopped
-          ? `отрисовка встала: последняя за ${gap} кадров до конца окна `
-            + `(всего ${paintFrames} из ${gameFrames} кадров игры, ${pct})`
-            + (enoughPaint ? '' : ' — либо рендер умер, либо экран доиграл анимацию и ждёт ввода')
-            + (onDemand ? '. renderMode: on-demand — игра рисует по событию' : '')
+          ? `rendering stopped: the last draw was ${gap} frames before the end of the window `
+            + `(${paintFrames} of ${gameFrames} game frames painted, ${pct})`
+            + (enoughPaint ? '' : ' — either rendering died or the screen finished its animation and is waiting for input')
+            + (onDemand ? '. renderMode: on-demand; event-driven rendering' : '')
           : paintFrames < MIN_FRAMES
-            ? `кадров с отрисовкой всего ${paintFrames} — судить о рендере не по чему`
+            ? `only ${paintFrames} painted frames; insufficient evidence to assess rendering`
             : !enoughPaint
-              ? `только ${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct}) — игра почти не перерисовывается`
-              : `${paintFrames} из ${gameFrames} кадров игры с отрисовкой (${pct})`
-              + (frozen ? ' — но пиксели канваса не изменились: игра завершилась, стоит на паузе или рисует одно и то же' : ''));
+              ? `only ${paintFrames} of ${gameFrames} game frames were painted (${pct}); the game barely redraws`
+              : `${paintFrames} of ${gameFrames} game frames were painted (${pct})`
+              + (frozen ? ' — canvas pixels did not change: game over, paused or redrawing the same image' : ''));
   }
 
-  // Числа кадра существуют, только если кадры были. Без замера ноль
-  // миллисекунд работы и ноль draw call'ов «укладываются» в любой бюджет и
-  // рисуют частокол зелёных проверок под красным sample. Молчание честнее.
-  // Вес, время загрузки, ошибки и «живой кадр» от кадров не зависят и
-  // считаются всегда.
+  // Frame metrics exist only when frames were measured. Otherwise zero work
+  // and draw calls create misleading passing gates beneath a failed sample.
+  // Size, load time, errors and image-content checks do not depend on frames.
   const budgetMs = b.frameMs ?? 16.7;
   if (measured) {
-    // Софтверный WebGL медленнее GPU в разы, поэтому провал по бюджету здесь
-    // не приговор игре — понижаем до предупреждения и говорим почему.
+    // Software WebGL is much slower than hardware; downgrade its budget failure
+    // to a warning and explain the environment limitation.
     const costStatus = m.frameWorkMs <= budgetMs ? 'pass' : m.frameWorkMs <= budgetMs * 1.5 ? 'warn' : 'fail';
     add('frame-work', m.softwareGl && costStatus === 'fail' ? 'warn' : costStatus,
-      `${m.frameWorkMs} мс работы в кадре (бюджет ≤${budgetMs} мс) — запас ×${m.headroom}, ` +
-      // Именно «внутри rAF», а не «главный поток»: работа в setTimeout, в
-      // обработчиках событий и в парсинге сюда не попадает. Обещать больше,
-      // чем мерим, — врать в ту самую сторону, где всё зелено.
-      `внутри rAF занято ${Math.round(m.mainThreadBusy * 100)}% времени` +
-      (m.softwareGl ? ' · софтверный WebGL, сравнивать только с прошлыми прогонами' : ''));
+      `${m.frameWorkMs} ms of frame work (budget <=${budgetMs} ms); headroom ×${m.headroom}, ` +
+      // Say inside rAF, not main thread: timeouts, event handlers and parsing
+      // are excluded. Broader claims would falsely reassure users.
+      `busy inside rAF for ${Math.round(m.mainThreadBusy * 100)}% of the time` +
+      (m.softwareGl ? ' · software WebGL; compare only against previous runs' : ''));
 
     const spikeStatus = m.frameWorkP99Ms <= budgetMs * 3 ? 'pass' : m.frameWorkP99Ms <= budgetMs * 6 ? 'warn' : 'fail';
     add('frame-spikes', m.softwareGl && spikeStatus === 'fail' ? 'warn' : spikeStatus,
-      `p99 работы ${m.frameWorkP99Ms} мс, максимум ${m.frameWorkMaxMs} мс`);
+      `p99 work ${m.frameWorkP99Ms} ms, maximum ${m.frameWorkMaxMs} ms`);
   }
 
-  // Подвисания считаются по кадрам ПРОБЫ и работы игры не требуют вовсе —
-  // значит и молчать вместе с числами кадра не должны. Иначе единственный
-  // детектор работы ВНЕ rAF выключался бы ровно для тех игр, которые всю
-  // работу там и делают: блокирующий setInterval не попадает ни в frameWorkMs,
-  // ни в «занято внутри rAF», но растягивает интервал между кадрами.
-  //
-  // На каденс (кадр/с) гейт вешать нельзя — в headless он упирается в потолок
-  // браузера (30 кадр/с на обеих фикстурах) и мерил бы харнесс, а не игру.
-  // Доля длинных кадров от этого потолка не зависит: 33 мс — это не 50 мс.
+  // Stalls use probe frames and remain measurable without game callbacks.
+  // Keep this check even when frame-work metrics are absent: a blocking
+  // setInterval is outside rAF work but stretches frame intervals.
+  // Cadence cannot be a gate because headless Chromium can cap it at 30 fps;
+  // that would measure the harness. The >50 ms frame fraction is independent
+  // of this cap: a 33 ms frame is not a 50 ms stall.
   if (frames >= MIN_FRAMES) {
     const ratio = m.longFrameRatio ?? 0;
     const stallStatus = ratio <= 0.02 ? 'pass' : ratio <= 0.2 ? 'warn' : 'fail';
     add('stalls', m.softwareGl && stallStatus === 'fail' ? 'warn' : stallStatus,
-      `кадров дольше 50 мс: ${m.longFrames}/${frames} (${Math.round(ratio * 100)}%)`
-      + (stallStatus !== 'pass' ? ' — игра встаёт: работа вне rAF или тяжёлый кадр' : ''));
+      `frames longer than 50 ms: ${m.longFrames}/${frames} (${Math.round(ratio * 100)}%)`
+      + (stallStatus !== 'pass' ? ' — the game stalls: work outside rAF or an expensive frame' : ''));
   }
 
   add('errors', m.errorCount <= (b.errors ?? 0) ? 'pass' : m.errorCount <= (b.errors ?? 0) + 3 ? 'warn' : 'fail',
-    m.errorCount ? m.errors.slice(0, 3).map((e) => `${e.kind}: ${e.text}`).join(' | ') : 'чисто');
+    m.errorCount ? m.errors.slice(0, 3).map((e) => `${e.kind}: ${e.text}`).join(' | ') : 'clean');
 
   if (b.bundleKb != null) {
     add('bundle', m.bundleKb <= b.bundleKb ? 'pass' : m.bundleKb <= b.bundleKb * 1.5 ? 'warn' : 'fail',
-      `${m.bundleKb} КБ загружено (бюджет ≤${b.bundleKb} КБ)`);
+      `${m.bundleKb} KB downloaded (budget <=${b.bundleKb} KB)`);
   }
 
   if (b.loadMs != null) {
     add('load', m.loadMs <= b.loadMs ? 'pass' : m.loadMs <= b.loadMs * 2 ? 'warn' : 'fail',
-      `${m.loadMs} мс до load (бюджет ≤${b.loadMs} мс)`);
+      `${m.loadMs} ms until load (budget <=${b.loadMs} ms)`);
   }
 
-  // Единственный доступный прокси GPU-нагрузки: frameWorkMs меряет главный
-  // поток и о цене отрисовки не знает.
-  //
-  // Гейт по МАКСИМУМУ, а не по среднему и не по p99. Среднее прячет пик
-  // очевидным образом (один кадр с 600 вызовами при среднем 7). Но и p99
-  // ненадёжен: единственный тяжёлый кадр среди ста — это ровно 1% выборки,
-  // и перцентиль его теряет, хотя игрок этот фриз увидит. Для draw call'ов
-  // выброс — не шум измерения, а настоящая работа GPU.
+  // Draw calls are the available GPU-load proxy; frameWorkMs measures the
+  // main thread only. Gate on the maximum, not mean or p99: one 600-call
+  // frame amid a mean of 7 is real GPU work. Even p99 can discard a single
+  // heavy frame out of 100, although the player experiences that stall.
   if (measured && b.drawCalls != null) {
     const peak = m.drawCallsMax;
-    // Ноль вызовов при живом рендере — это не «уложились в бюджет», а
-    // «счётчик не сработал»: бюджет, который невозможно провалить, бесполезен.
+    // Zero draws with active rendering means the counter did not capture work,
+    // not that the game met its budget. An impossible-to-fail gate is useless.
     const neverFired = peak === 0 && (m.gameFrames ?? m.frames ?? 0) >= MIN_FRAMES;
     add('draw-calls', neverFired ? 'fail' : peak <= b.drawCalls ? 'pass' : peak <= b.drawCalls * 1.5 ? 'warn' : 'fail',
       neverFired
-        ? 'счётчик draw call не сработал ни разу при живом рендере — игра рисует не через WebGL '
-          + '(2D-канвас, WebGPU или OffscreenCanvas в воркере). Бюджет drawCalls для неё бессмыслен'
-        : `пик ${peak} draw call/кадр (бюджет ≤${b.drawCalls}), p99 ${m.drawCallsP99}, медиана ${m.drawCallsMedian}`
-          + ' — прокси нагрузки на GPU');
+        ? 'draw-call counter captured no work despite active rendering; the game bypasses WebGL '
+          + '(2D canvas, WebGPU or OffscreenCanvas in a worker). The drawCalls budget does not apply'
+        : `peak ${peak} draw calls/frame (budget <=${b.drawCalls}), p99 ${m.drawCallsP99}, median ${m.drawCallsMedian}`
+          + ' — GPU-load proxy');
   }
 
   if (m.canvas && !m.canvas.error) {
     const dead = m.canvas.distinctColors <= 2 || m.canvas.maxLum - m.canvas.minLum < 6;
     add('frame-alive', dead ? 'fail' : 'pass',
-      `${m.canvas.distinctColors} различимых цветов, яркость ${m.canvas.minLum}–${m.canvas.maxLum}`);
+      `${m.canvas.distinctColors} distinct colors, luminance ${m.canvas.minLum}–${m.canvas.maxLum}`);
   }
   return checks;
 }
 
 export function printProbe(m) {
-  const scene = m.scenario ? `, сцена «${m.scenario}»` : '';
-  console.log(color.b(`\n${m.game} — probe (${m.viewport}, ${m.seconds}с${scene})`));
+  const scene = m.scenario ? `, scene «${m.scenario}»` : '';
+  console.log(color.b(`\n${m.game} — probe (${m.viewport}, ${m.seconds}s${scene})`));
   for (const c of m.checks) console.log(`  ${verdictMark(c.status)} ${c.name.padEnd(13)} ${c.detail}`);
-  // Справочную строку печатаем только когда за ней стоят настоящие кадры:
-  // «медиана 0, каденс 0 мс (0 кадр/с)» — это не данные, а вид данных.
+  // Print reference numbers only when backed by measured frames. Zero median
+  // and zero cadence without a sample merely look like data.
   if (m.checks.some((c) => c.name === 'frame-work')) {
-    console.log(color.dim(`  draw calls: медиана ${m.drawCallsMedian}, p99 ${m.drawCallsP99}, макс ${m.drawCallsMax}` +
-      `${m.heapMb ? ` · heap ${m.heapMb} МБ` : ''}` +
-      `  ·  каденс ${m.frameIntervalMs} мс (${m.fpsAvg} кадр/с) — частота показа, не цена кадра`));
+    console.log(color.dim(`  draw calls: median ${m.drawCallsMedian}, p99 ${m.drawCallsP99}, max ${m.drawCallsMax}` +
+      `${m.heapMb ? ` · heap ${m.heapMb} MB` : ''}` +
+      `  ·  cadence ${m.frameIntervalMs} ms (${m.fpsAvg} fps); presentation rate, not frame cost`));
   }
 }
