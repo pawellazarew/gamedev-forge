@@ -1,5 +1,7 @@
 # game-forge
 
+**English** | [Русский](README.ru.md)
+
 A local CLI for browser game checks, screenshots, scripted play and balance
 simulations. No AI account is required. See the [repository quick start](../README.md).
 
