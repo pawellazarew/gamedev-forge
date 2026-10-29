@@ -1,5 +1,7 @@
 # blender-kit
 
+**English** | [Русский](README.ru.md)
+
 Headless Blender helpers for model previews and 3D-to-2D sprite baking.
 Requires **Blender 5.x** (developed with 5.1.1), including its bundled Python
 and NumPy. No separate Python environment or AI account is needed.

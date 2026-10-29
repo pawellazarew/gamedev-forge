@@ -1,5 +1,7 @@
 # gamedev-forge
 
+**English** | [Русский](README.ru.md)
+
 Local tools for testing web games and building game assets with Blender.
 Made for short feedback loops: run the game, inspect screenshots, measure it,
 change one thing, and run it again.
@@ -11,9 +13,9 @@ change one thing, and run it again.
 - **[Optional agent helpers](claude/)** provide Claude Code skills and review prompts.
   The command-line tools work independently of any AI service or API key.
 
-Early-stage developer tooling. The CLI and Blender documentation below are in
-English; detailed measurement notes, many diagnostics and agent helpers are
-currently in Russian.
+Early-stage developer tooling. Getting-started documentation is available in
+English and Russian; detailed measurement notes, many diagnostics and agent
+helpers are currently in Russian.
 
 ## Try game-forge
 
